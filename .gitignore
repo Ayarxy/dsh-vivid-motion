@@ -1,0 +1,10 @@
+# 依赖
+node_modules/
+
+# 临时脚本与草稿（本插件用 .scratch 存放一次性的 asar 检查脚本等）
+.scratch/
+
+# 日志与编辑器/系统杂物
+*.log
+.DS_Store
+Thumbs.db
