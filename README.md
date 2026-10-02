@@ -142,28 +142,6 @@ dsh plugin --profile desktop add link:D:\Code\dsh\plugins\dsh-vivid-motion
 
 client 模块会被浏览器缓存；未运行构建或 HMR watcher 时，源码变化不能靠重复开关保证更新。修改本组件已经生成的[客户端产物](<packages/dsh-copy-toast/lib/client.js>)后，重启 DSH 应用并重新加载页面，以重新读取客户端产物；本仓库没有额外的 TypeScript / Vite 构建步骤。不要另起 Web 服务器来代替正在使用的 GUI。
 
-## 回归测试
-
-使用 DSH 捆绑的 Node.js 24（或同样支持 `--test-isolation=none` 的版本），无需新增测试依赖：
-
-```sh
-npm test
-```
-
-- [剪贴板回归](<tests/copy-toast-clipboard.test.mjs>)：直接在 VM 中加载生产观察器，模拟派发结束即失效的 DataTransfer，验证生命周期、载荷、取消、自定义复制、API 保真及去重。
-- [动画/交互回归](<tests/copy-toast-stack.test.mjs>)：确定性时钟与 DOM / WAAPI 状态桩，覆盖回弹、悬停、指针取消或捕获丢失、透明层、展开间隙及卸载。
-- [启停集成回归](<tests/copy-toast-wiring.test.mjs>)：同一缓存模块的实际 `apply`、挂载、卸载和重新启用，验证旧回调不补发、第三方包装不造成重复，以及 locale / slot 接线。
-
-真实 Chromium 测试可选，需要已安装 Chrome / Chromium（不自动下载安装）：
-
-```sh
-npm run test:browser
-# 非默认安装位置可设置 CHROME_BIN，或传入路径：
-node tests/copy-toast-browser.mjs --browser="<Chrome executable>"
-```
-
-[浏览器测试](<tests/copy-toast-browser.mjs>)使用独立 headless 配置目录和空白测试页面，验证真实 WAAPI、触控取消、捕获丢失、点击穿透、展开间隙和 reduced-motion；不连接当前 GUI，也不调用系统剪贴板。配置目录留在 `.scratch/` 供排查，测试结束会关闭自己的浏览器。常规 `npm test` 不需要浏览器，不应把状态桩结果当作系统剪贴板端到端验证。
-
 ## 目录
 
 ```

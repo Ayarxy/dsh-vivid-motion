@@ -30,10 +30,6 @@
       "patch": "./cordis.patch.yml"
     }
   },
-  "scripts": {
-    "test": "node --test --test-isolation=none tests/*.test.mjs",
-    "test:browser": "node tests/copy-toast-browser.mjs"
-  },
   "dependencies": {
     "dsh-click-spark": "file:packages/dsh-click-spark",
     "dsh-copy-toast": "file:packages/dsh-copy-toast"
