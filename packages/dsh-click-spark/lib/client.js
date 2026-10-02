@@ -47,6 +47,24 @@ window.__ModuleLoader__.load({
 			var zeta = c / (2 * Math.sqrt(k * m));
 			var wd = w0 * Math.sqrt(Math.abs(1 - zeta * zeta));
 			var decay = zeta * w0;
+			var critical = Math.abs(zeta - 1) < 1e-4;
+			var sineScale = 0;
+			var q1 = 0;
+			var q2 = 0;
+			var weight1 = 0;
+			var weight2 = 0;
+			// These coefficients depend only on the preset, not on frame time.
+			if (!critical) {
+				if (zeta < 1) {
+					sineScale = decay / wd;
+				} else {
+					var s = Math.sqrt(zeta * zeta - 1);
+					q1 = w0 * (-zeta + s);
+					q2 = w0 * (-zeta - s);
+					weight1 = q2 / (q1 - q2);
+					weight2 = q1 / (q1 - q2);
+				}
+			}
 
 			return {
 				w0: w0,
@@ -56,18 +74,15 @@ window.__ModuleLoader__.load({
 				value: function (t) {
 					if (t <= 0) return 0;
 					// ζ ≈ 1: the critically damped form, which is what 干脆 uses.
-					if (Math.abs(zeta - 1) < 1e-4) {
+					if (critical) {
 						var ec = Math.exp(-w0 * t);
 						return 1 - ec * (1 + w0 * t);
 					}
 					if (zeta < 1) {
 						var e = Math.exp(-decay * t);
-						return 1 - e * (Math.cos(wd * t) + (decay / wd) * Math.sin(wd * t));
+						return 1 - e * (Math.cos(wd * t) + sineScale * Math.sin(wd * t));
 					}
-					var s = Math.sqrt(zeta * zeta - 1);
-					var q1 = w0 * (-zeta + s);
-					var q2 = w0 * (-zeta - s);
-					return 1 + (q2 / (q1 - q2)) * Math.exp(q1 * t) - (q1 / (q1 - q2)) * Math.exp(q2 * t);
+					return 1 + weight1 * Math.exp(q1 * t) - weight2 * Math.exp(q2 * t);
 				}
 			};
 		}
@@ -87,6 +102,8 @@ window.__ModuleLoader__.load({
 		var disposed = false;
 		var colorCache = null;
 		var spring = createSpring(PRESET);
+		var directionCount = 0;
+		var directionCache = [];
 
 		/**
 		 * The stroke colour, read once and cached until the app switches theme.
@@ -115,19 +132,17 @@ window.__ModuleLoader__.load({
 			ctx2d.scale(dpr, dpr);
 		}
 
-		function makeSparks(x, y, now) {
+		function readDirections() {
 			var n = Math.max(1, Math.round(PRESET.sparkCount));
+			if (n === directionCount) return directionCache;
 			var out = [];
 			for (var i = 0; i < n; i++) {
-				out.push({
-					x: x,
-					y: y,
-					angle: (2 * Math.PI * i) / n, // strictly even, so the burst is symmetric
-					radius: PRESET.sparkRadius,
-					size: PRESET.sparkSize,
-					startTime: now
-				});
+				var angle = (2 * Math.PI * i) / n; // strictly even, so the burst is symmetric
+				out.push({ cos: Math.cos(angle), sin: Math.sin(angle) });
 			}
+			// Replace rather than mutate: existing bursts keep their original directions.
+			directionCount = n;
+			directionCache = out;
 			return out;
 		}
 
@@ -135,7 +150,12 @@ window.__ModuleLoader__.load({
 			if (canvas === null || disposed) return;
 			if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 			bursts.push({
-				sparks: makeSparks(x, y, performance.now()),
+				x: x,
+				y: y,
+				startTime: performance.now(),
+				radius: PRESET.sparkRadius,
+				size: PRESET.sparkSize,
+				directions: readDirections(),
 				color: readColor()
 			});
 			pump();
@@ -146,36 +166,31 @@ window.__ModuleLoader__.load({
 			ctx2d.clearRect(0, 0, cssW, cssH);
 			ctx2d.lineWidth = 2;
 
-			var alive = [];
+			var aliveCount = 0;
 			for (var b = 0; b < bursts.length; b++) {
 				var burst = bursts[b];
-				var sparks = burst.sparks;
-				var keep = [];
+				var elapsed = now - burst.startTime;
+				var directions = burst.directions;
+				if (elapsed >= PRESET.duration || !directions.length) continue;
+
+				// All lines in a burst share the same time, distance and length.
+				var p = elapsed > 0 ? elapsed / PRESET.duration : 0;
+				var distance = spring.value(elapsed / 1000) * burst.radius * (PRESET.extraScale || 1);
+				var lineLength = burst.size * (1 - easeOut(p));
+				var endDistance = distance + lineLength;
 				ctx2d.strokeStyle = burst.color;
 				ctx2d.beginPath();
-				for (var i = 0; i < sparks.length; i++) {
-					var sp = sparks[i];
-					var elapsed = now - sp.startTime;
-					if (elapsed >= PRESET.duration) continue;
-
-					var p = elapsed > 0 ? elapsed / PRESET.duration : 0;
-					var distance = spring.value(elapsed / 1000) * sp.radius * (PRESET.extraScale || 1);
-					var lineLength = sp.size * (1 - easeOut(p));
-					var cos = Math.cos(sp.angle);
-					var sin = Math.sin(sp.angle);
-
-					ctx2d.moveTo(sp.x + distance * cos, sp.y + distance * sin);
-					ctx2d.lineTo(sp.x + (distance + lineLength) * cos, sp.y + (distance + lineLength) * sin);
-					keep.push(sp);
+				for (var i = 0; i < directions.length; i++) {
+					var direction = directions[i];
+					ctx2d.moveTo(burst.x + distance * direction.cos, burst.y + distance * direction.sin);
+					ctx2d.lineTo(burst.x + endDistance * direction.cos, burst.y + endDistance * direction.sin);
 				}
 				// One stroke per burst: same pixels, one pass over the path.
 				ctx2d.stroke();
-				if (keep.length) {
-					burst.sparks = keep;
-					alive.push(burst);
-				}
+				// Compact in place, preserving draw order without per-frame arrays.
+				bursts[aliveCount++] = burst;
 			}
-			bursts = alive;
+			bursts.length = aliveCount;
 
 			// Stop the loop with the last burst: an idle page schedules no frames.
 			if (bursts.length) {
