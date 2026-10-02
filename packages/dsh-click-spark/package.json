@@ -1,0 +1,31 @@
+{
+  "name": "dsh-click-spark",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH Web 界面上的鼠标点击粒子动效组件：从指针落点向外甩出放射状短线，用临界阻尼弹簧做「干脆」位移曲线（无回弹、无旋转、无拖尾）。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "click",
+    "spark",
+    "motion"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  },
+  "license": "MIT"
+}

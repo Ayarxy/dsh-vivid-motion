@@ -1,7 +1,8 @@
 {
   "name": "dsh-vivid-motion",
   "version": "0.1.0",
-  "description": "DSH Web 界面上的鼠标点击粒子动效：从指针落点向外甩出放射状短线，用临界阻尼弹簧做「干脆」位移曲线（无回弹、无旋转、无拖尾）。",
+  "private": true,
+  "description": "DSH Web 界面动效聚合包（空壳 bundle）：目前挂载 dsh-click-spark 点击粒子动效组件。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -14,22 +15,21 @@
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
-    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "lib/index.js",
-    "lib/client.js",
     "cordis.patch.yml",
     "README.md"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "platform": "web"
     }
+  },
+  "dependencies": {
+    "dsh-click-spark": "file:packages/dsh-click-spark"
   },
   "license": "MIT"
 }

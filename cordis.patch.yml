@@ -1,8 +1,13 @@
 # ============================================================================
-# dsh-vivid-motion —— DSH bundle patch
+# dsh-vivid-motion —— DSH bundle patch（聚合包）
 # ============================================================================
-# 插件的“挂载声明”。DSH 启动时按 bundle 层栈叠加各插件 patch，
-# 本文件把本插件作为一行插入 Web profile 的配置树。
+# 本包是空壳聚合包（profile bundle）：自身不含功能代码，靠下面的 insert 行
+# 把各个组件包挂进 Web profile 的配置树。每个组件是 packages/ 下的独立包，
+# 组件行的显示名取自各组件包自己的 package.json / locale 元数据。
+#
+# 组件以裸包名引用（如 dsh-click-spark），靠 dependencies 里的 file: 依赖
+# 和 npm install 生成的 node_modules 符号链接解析——clone 本仓库后必须先
+# 在聚合包目录跑一次 npm install。
 #
 # 安装方式（二选一）：
 #   1) Desktop 应用：设置 → 插件 → 添加插件 → 填本目录绝对路径
@@ -10,5 +15,5 @@
 # ============================================================================
 
 - insert:
-    - id: dsh-vivid-motion
-      name: dsh-vivid-motion
+    - id: dsh-click-spark
+      name: dsh-click-spark

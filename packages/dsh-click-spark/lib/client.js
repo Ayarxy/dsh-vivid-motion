@@ -1,12 +1,12 @@
 window.__ModuleLoader__.load({
-	id: "dsh-vivid-motion",
+	id: "dsh-click-spark",
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 
 		/**
-		 * Vivid Motion — the "干脆" (crisp) click spark.
+		 * Click Spark — the "干脆" (crisp) click spark.
 		 *
 		 * A pointer press fires `sparkCount` line segments evenly spread around
 		 * the pointer and pushes them outward. The only thing that moves is the
@@ -207,11 +207,11 @@ window.__ModuleLoader__.load({
 
 		/** Mounts the overlay canvas and the pointer listeners. */
 		function mount() {
-			canvas = document.getElementById("dsh-vivid-motion-canvas");
+			canvas = document.getElementById("dsh-click-spark-canvas");
 			if (canvas !== null) return function () {}; // a live sibling half already owns it
 
 			canvas = document.createElement("canvas");
-			canvas.id = "dsh-vivid-motion-canvas";
+			canvas.id = "dsh-click-spark-canvas";
 			canvas.setAttribute("aria-hidden", "true");
 			// document.body, outside the app frame: above the shell overlay layer
 			// (`[data-shell-overlay]`, z-index 20) and outside its overflow clip.
@@ -221,7 +221,7 @@ window.__ModuleLoader__.load({
 			document.body.append(canvas);
 
 			ctx2d = canvas.getContext("2d");
-			if (ctx2d === null) throw new Error("dsh-vivid-motion: 2d canvas context unavailable");
+			if (ctx2d === null) throw new Error("dsh-click-spark: 2d canvas context unavailable");
 			resize();
 
 			// The theme flips `data-ds-dark-theme` on the body; the cached stroke
@@ -267,10 +267,10 @@ window.__ModuleLoader__.load({
 					return mount();
 				} catch (error) {
 					// A non-essential ornament must never take the page down with it.
-					if (typeof console !== "undefined") console.error("dsh-vivid-motion: mount failed", error);
+					if (typeof console !== "undefined") console.error("dsh-click-spark: mount failed", error);
 					return function () {};
 				}
-			}, "dsh-vivid-motion: click spark overlay");
+			}, "dsh-click-spark: click spark overlay");
 		}
 
 		exports.apply = apply;
