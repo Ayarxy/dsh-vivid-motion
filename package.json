@@ -2,13 +2,15 @@
   "name": "dsh-vivid-motion",
   "version": "0.1.0",
   "private": true,
-  "description": "DSH Web 界面动效聚合包（空壳 bundle）：目前挂载 dsh-click-spark 点击粒子动效组件。",
+  "description": "DSH Web 界面动效聚合包（空壳 bundle）：目前挂载 dsh-click-spark 点击粒子动效与 dsh-copy-toast 复制确认 toast 两个组件。",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "deepseek-harness",
     "click",
     "spark",
+    "copy",
+    "toast",
     "motion"
   ],
   "type": "module",
@@ -28,8 +30,13 @@
       "patch": "./cordis.patch.yml"
     }
   },
+  "scripts": {
+    "test": "node --test --test-isolation=none tests/*.test.mjs",
+    "test:browser": "node tests/copy-toast-browser.mjs"
+  },
   "dependencies": {
-    "dsh-click-spark": "file:packages/dsh-click-spark"
+    "dsh-click-spark": "file:packages/dsh-click-spark",
+    "dsh-copy-toast": "file:packages/dsh-copy-toast"
   },
   "license": "MIT"
 }

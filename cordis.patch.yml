@@ -17,3 +17,5 @@
 - insert:
     - id: dsh-click-spark
       name: dsh-click-spark
+    - id: dsh-copy-toast
+      name: dsh-copy-toast

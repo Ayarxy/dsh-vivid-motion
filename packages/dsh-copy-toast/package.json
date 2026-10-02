@@ -1,0 +1,33 @@
+{
+  "name": "dsh-copy-toast",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH Web 界面上的「已复制」确认动效组件：任何复制动作都会在底部居中弹出一枚浅色 toast，弹簧果冻入场、按住可拖动丢弃。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "copy",
+    "clipboard",
+    "toast",
+    "motion"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "license": "MIT"
+}
