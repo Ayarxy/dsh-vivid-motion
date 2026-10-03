@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "dsh-ui-transitions",
-    "description": "第一档（纯样式）：菜单和设置面板淡入，菜单与导航高亮平滑过渡；关闭仍由宿主立即完成。"
-  }
-}

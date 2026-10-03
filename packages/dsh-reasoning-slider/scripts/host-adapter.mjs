@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 // Keep the reference slider, rendering and motion intact. These replacements
-// affect the picker's async submission controller and pending affordances.
+// affect the picker controller, popup shell and pending affordances.
 export function adaptHostSelection(source) {
   const newline = source.includes('\r\n') ? '\r\n' : '\n';
   const lines = text => text.replace(/\r?\n/g, newline);
@@ -19,6 +19,17 @@ export function adaptHostSelection(source) {
 			const current = optimistic ?? pending ?? state.current;`);
   replace('{ className: "dsh-reasoning-trigger-effort" }, effortLabel)',
     '{ className: "dsh-reasoning-trigger-effort", "data-maximum": isMaximumEffort(efforts, preview ?? efforts.findIndex((item) => item.id === effort)) || undefined }, effortLabel)');
+  replace('open && pane === "effort" ? translate("chooseEffort") : modelLabel', 'modelLabel');
+  replace('(!open || pane !== "effort") && effortLabel && h("span",', 'effortLabel && h("span",');
+  replace('panel = React.useRef(null), search = React.useRef(null);',
+    'panel = React.useRef(null), search = React.useRef(null), content = React.useRef(null);');
+  replace('side: "top", align: "end", gap: 8, margin: 12',
+    'side: "top", align: "center", gap: 8, margin: 12, contentRef: content, pane, reduced');
+  // The independently sized content prevents animated shell height from
+  // squeezing the list's scrollport, reflowing text or disturbing focus.
+  replace('}, pane === "effort" ? h(React.Fragment, null,',
+    '}, h("div", { ref: content, className: "dsh-reasoning-content" }, pane === "effort" ? h(React.Fragment, null,');
+  replace('), document.body));', ')), document.body));');
   replace('const busy = saving || state.pending != null, blocked = locked || busy;', `const busy = saving || pending != null;
 			const editingEffort = inFlight.current && !inFlight.current.modelChange && sameModel(current, state.current);
 			const blocked = locked || busy && !editingEffort;`);
@@ -108,6 +119,131 @@ export function adaptHostSelection(source) {
   return source;
 }
 
+// Keep natural content size independent of the animated shell. Only the shell
+// changes height: text is translated, never scaled. This factory is embedded
+// into the generated client, so all of its helpers must remain self-contained.
+export function createCenteredPosition(React) {
+  const duration = 520, steps = 65;
+  // Underdamped spring, mass 1 / stiffness 420 / damping 32. Sampled keyframes
+  // let the browser run it without React renders or layout reads each frame.
+  const spring = (from, to, velocity, ms) => {
+    const time = ms / 1000, decay = 16, frequency = Math.sqrt(420 - decay * decay);
+    const a = from - to, b = (velocity + decay * a) / frequency;
+    return to + Math.exp(-decay * time) * (a * Math.cos(frequency * time) + b * Math.sin(frequency * time));
+  };
+  const sample = motion => {
+    const position = Math.max(0, Math.min(steps, (Number(motion.animation.currentTime) || 0) / duration * steps));
+    const index = Math.min(steps - 1, Math.floor(position)), fraction = position - index;
+    const first = motion.values[index], last = motion.values[index + 1];
+    const result = { velocity: {} };
+    for (const key of ["top", "height"]) {
+      result[key] = first[key] + (last[key] - first[key]) * fraction;
+      result.velocity[key] = position === steps ? 0 : (last[key] - first[key]) * steps / duration * 1000;
+    }
+    return result;
+  };
+  return function useCenteredPosition({ open, anchorRef, panelRef, contentRef, pane, reduced, gap = 8, margin = 12 }) {
+    const [placement, setPlacement] = React.useState(null);
+    const controller = React.useRef(null), options = React.useRef(null);
+    options.current = { pane, reduced };
+    React.useLayoutEffect(() => {
+      if (!open) { setPlacement(null); return; }
+      const anchor = anchorRef.current, panel = panelRef.current, content = contentRef.current;
+      if (!anchor || !panel || !content) return;
+      let target = null, lastPane = null, motion = null, entrance = null, anchorRect = null, contentLimit = null;
+      const stop = (keepEntrance = false) => {
+        if (motion) { motion.animation.onfinish = null; motion.animation.cancel(); }
+        motion = null;
+        if (!keepEntrance) { entrance?.cancel(); entrance = null; }
+      };
+      const update = () => {
+        const { pane, reduced } = options.current;
+        const rect = anchor.getBoundingClientRect();
+        anchorRect = rect;
+        const style = window.getComputedStyle(panel);
+        const chrome = [style.paddingTop, style.paddingBottom, style.borderTopWidth, style.borderBottomWidth]
+          .reduce((sum, value) => sum + (parseFloat(value) || 0), 0);
+        const limit = style.maxHeight && style.maxHeight !== "none" ? `calc(${style.maxHeight} - ${chrome}px)` : "";
+        if (contentLimit !== limit) { content.style.maxHeight = limit; contentLimit = limit; }
+        const width = panel.offsetWidth;
+        // Height animation never constrains this flex item. Its natural height
+        // remains measurable even when a pane switch interrupts an animation.
+        const inset = motion ? target.inset : panel.offsetHeight - content.offsetHeight;
+        const height = content.offsetHeight + inset;
+        const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+        const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+        const clamp = (value, end) => Math.max(margin, Math.min(value, end - margin));
+        const left = clamp(rect.left + (rect.width - width) / 2, viewportWidth - width);
+        const above = rect.top - gap - height, below = rect.bottom + gap;
+        const useBelow = above < margin && below + height <= viewportHeight - margin;
+        const top = clamp(useBelow ? below : above, viewportHeight - height);
+        const changedPane = target && lastPane !== pane;
+        const changedSize = target && (target.top !== top || target.left !== left || target.height !== height || target.width !== width);
+        if (target && !changedPane && !changedSize && !reduced) return;
+        const animate = target && !reduced && typeof panel.animate === "function" &&
+          (changedPane || motion && changedSize);
+        const from = motion ? sample(motion) : target && { ...target, velocity: { top: 0, height: 0 } };
+        stop(animate && !changedPane);
+        target = { top, left, width, height, inset }; lastPane = pane;
+        setPlacement(previous => previous?.left === left && previous.top === top ? previous : { left, top });
+        if (!animate) return;
+        // Limit the small rebound at viewport edges, preserving the 8px gap
+        // wherever there is room above/below the trigger.
+        const room = useBelow ? viewportHeight - margin - below : rect.top - gap - margin;
+        const maxHeight = Math.max(from.height, height, Math.min(viewportHeight - 32, room));
+        const values = Array.from({ length: steps + 1 }, (_, index) => {
+          if (index === steps) return { top, height };
+          const time = index / steps * duration;
+          const rawHeight = spring(from.height, height, from.velocity.height, time);
+          const nextHeight = Math.max(inset, Math.min(rawHeight, maxHeight));
+          const rawTop = spring(from.top, top, from.velocity.top, time);
+          return { height: nextHeight, top: clamp(rawTop + (useBelow ? 0 : rawHeight - nextHeight), viewportHeight - nextHeight) };
+        });
+        const animation = panel.animate(values.map(value => ({ top: `${value.top}px`, height: `${value.height}px` })),
+          { duration, easing: "linear", fill: "both" });
+        motion = { animation, values };
+        if (changedPane) {
+          const distance = pane === "model" ? 12 : -6;
+          entrance = content.animate(Array.from({ length: steps + 1 }, (_, index) => {
+            const time = index / steps * duration;
+            return { transform: `translateY(${index === steps ? 0 : spring(distance, 0, 0, time)}px)`,
+              opacity: 1 - Math.pow(1 - Math.min(1, time / 140), 3) };
+          }), { duration, easing: "linear", fill: "both" });
+        }
+        animation.onfinish = () => { if (motion?.animation === animation) stop(); };
+      };
+      // A viewport/anchor move must track immediately, not trail the input.
+      const reposition = event => {
+        // Menu focus/scrollIntoView and list scrolling do not move the anchor.
+        if (event?.target instanceof Node && panel.contains(event.target)) return;
+        stop(); update();
+      };
+      controller.current = update;
+      update();
+      const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver((entries = []) => {
+        if (entries.some(entry => entry.target === anchor)) {
+          const rect = anchor.getBoundingClientRect();
+          if (rect.top !== anchorRect.top || rect.bottom !== anchorRect.bottom) { reposition(); return; }
+        }
+        update();
+      });
+      observer?.observe(anchor);
+      observer?.observe(content);
+      window.addEventListener("resize", reposition);
+      window.addEventListener("scroll", reposition, true);
+      return () => {
+        controller.current = null;
+        stop();
+        observer?.disconnect();
+        window.removeEventListener("resize", reposition);
+        window.removeEventListener("scroll", reposition, true);
+      };
+    }, [open, anchorRef, panelRef, contentRef, gap, margin]);
+    React.useLayoutEffect(() => { controller.current?.(); }, [pane, reduced]);
+    return placement;
+  };
+}
+
 // Host theme applies superellipse to every element and pseudo-element. Restore
 // the HTML's ordinary round corners only inside this component, including its
 // body portal. The slider itself still uses the reference border-radius: 50%.
@@ -124,7 +260,9 @@ export const hostCSS = `
 .dsh-reasoning-input::-moz-range-thumb { corner-shape:round; }
 /* Decorative bursts must not create a scrollport or change the rail width. */
 .dsh-reasoning-panel[role=dialog] { display:flex; flex-direction:column; overflow:clip; }
+/* The hook derives max-height from the shell's actual padding and borders. */
+.dsh-reasoning-content { display:flex; flex-direction:column; flex-shrink:0; min-height:0; }
 .dsh-reasoning-header, .dsh-reasoning-slider-wrap, .dsh-reasoning-search, .dsh-reasoning-retry { flex-shrink:0; }
 .dsh-reasoning-model-list { min-height:0; }
-.dsh-reasoning-panel > .dsh-reasoning-notice { min-height:0; overflow:auto; overflow-wrap:anywhere; overscroll-behavior:contain; }
+.dsh-reasoning-content > .dsh-reasoning-notice { min-height:0; overflow:auto; overflow-wrap:anywhere; overscroll-behavior:contain; }
 `;
