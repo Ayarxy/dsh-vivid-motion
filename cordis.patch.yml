@@ -19,3 +19,9 @@
       name: dsh-click-spark
     - id: dsh-copy-toast
       name: dsh-copy-toast
+    - id: dsh-smooth-caret
+      name: dsh-smooth-caret
+    - id: dsh-reasoning-slider
+      name: dsh-reasoning-slider
+    - id: dsh-ui-transitions
+      name: dsh-ui-transitions

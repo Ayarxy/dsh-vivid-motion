@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-reasoning-slider",
+    "description": "Codex-style reasoning slider and model picker, using the host's available models and effort levels."
+  }
+}

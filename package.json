@@ -2,7 +2,7 @@
   "name": "dsh-vivid-motion",
   "version": "0.1.0",
   "private": true,
-  "description": "DSH Web 界面动效聚合包（空壳 bundle）：目前挂载 dsh-click-spark 点击粒子动效与 dsh-copy-toast 复制确认 toast 两个组件。",
+  "description": "DSH Web 界面动效聚合包（空壳 bundle）：点击粒子、复制确认 toast、平滑输入光标、推理强度滑块与 UI 过渡，各组件独立开关。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -11,7 +11,9 @@
     "spark",
     "copy",
     "toast",
-    "motion"
+    "motion",
+    "reasoning",
+    "slider"
   ],
   "type": "module",
   "main": "lib/index.js",
@@ -32,7 +34,10 @@
   },
   "dependencies": {
     "dsh-click-spark": "file:packages/dsh-click-spark",
-    "dsh-copy-toast": "file:packages/dsh-copy-toast"
+    "dsh-copy-toast": "file:packages/dsh-copy-toast",
+    "dsh-smooth-caret": "file:packages/dsh-smooth-caret",
+    "dsh-reasoning-slider": "file:packages/dsh-reasoning-slider",
+    "dsh-ui-transitions": "file:packages/dsh-ui-transitions"
   },
   "license": "MIT"
 }

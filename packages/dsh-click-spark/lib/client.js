@@ -98,8 +98,9 @@ window.__ModuleLoader__.load({
 		var cssW = 0;
 		var cssH = 0;
 		var bursts = [];
-		var pumping = false;
+		var frameId = null;
 		var disposed = false;
+		var observer = null;
 		var colorCache = null;
 		var spring = createSpring(PRESET);
 		var directionCount = 0;
@@ -162,6 +163,7 @@ window.__ModuleLoader__.load({
 		}
 
 		function draw(now) {
+			frameId = null;
 			if (disposed) return;
 			ctx2d.clearRect(0, 0, cssW, cssH);
 			ctx2d.lineWidth = 2;
@@ -194,17 +196,13 @@ window.__ModuleLoader__.load({
 
 			// Stop the loop with the last burst: an idle page schedules no frames.
 			if (bursts.length) {
-				requestAnimationFrame(draw);
-			} else {
-				pumping = false;
-				ctx2d.clearRect(0, 0, cssW, cssH);
+				frameId = requestAnimationFrame(draw);
 			}
 		}
 
 		function pump() {
-			if (pumping || disposed) return;
-			pumping = true;
-			requestAnimationFrame(draw);
+			if (frameId !== null || disposed) return;
+			frameId = requestAnimationFrame(draw);
 		}
 
 		function onPointerDown(event) {
@@ -212,18 +210,9 @@ window.__ModuleLoader__.load({
 			fire(event.clientX, event.clientY);
 		}
 
-		function onTouchStart(event) {
-			var touches = event.changedTouches;
-			if (!touches) return;
-			for (var i = 0; i < touches.length; i++) {
-				fire(touches[i].clientX, touches[i].clientY);
-			}
-		}
-
 		/** Mounts the overlay canvas and the pointer listeners. */
 		function mount() {
-			canvas = document.getElementById("dsh-click-spark-canvas");
-			if (canvas !== null) return function () {}; // a live sibling half already owns it
+			if (document.getElementById("dsh-click-spark-canvas") !== null) return function () {};
 
 			canvas = document.createElement("canvas");
 			canvas.id = "dsh-click-spark-canvas";
@@ -239,35 +228,36 @@ window.__ModuleLoader__.load({
 			if (ctx2d === null) throw new Error("dsh-click-spark: 2d canvas context unavailable");
 			resize();
 
-			// The theme flips `data-ds-dark-theme` on the body; the cached stroke
-			// colour has to go with it.
-			var observer =
+			// Theme schemes and custom palette tokens are applied to the body.
+			observer =
 				typeof MutationObserver === "function"
 					? new MutationObserver(function () {
 							colorCache = null;
 						})
 					: null;
 			if (observer !== null) {
-				observer.observe(document.body, { attributes: true, attributeFilter: ["data-ds-dark-theme"] });
+				observer.observe(document.body, { attributes: true, attributeFilter: ["data-ds-dark-theme", "style"] });
 			}
 
 			window.addEventListener("resize", resize);
 			document.addEventListener("pointerdown", onPointerDown, { passive: true, capture: true });
-			document.addEventListener("touchstart", onTouchStart, { passive: true, capture: true });
 
-			return function () {
-				disposed = true;
-				window.removeEventListener("resize", resize);
-				document.removeEventListener("pointerdown", onPointerDown, { capture: true });
-				document.removeEventListener("touchstart", onTouchStart, { capture: true });
-				if (observer !== null) observer.disconnect();
-				bursts = [];
-				pumping = false;
-				colorCache = null;
-				ctx2d = null;
-				if (canvas !== null && canvas.parentNode !== null) canvas.parentNode.removeChild(canvas);
-				canvas = null;
-			};
+			return unmount;
+		}
+
+		function unmount() {
+			disposed = true;
+			window.removeEventListener("resize", resize);
+			document.removeEventListener("pointerdown", onPointerDown, { capture: true });
+			if (observer !== null) observer.disconnect();
+			observer = null;
+			if (frameId !== null) cancelAnimationFrame(frameId);
+			frameId = null;
+			bursts = [];
+			colorCache = null;
+			ctx2d = null;
+			if (canvas !== null && canvas.parentNode !== null) canvas.parentNode.removeChild(canvas);
+			canvas = null;
 		}
 
 		/**
@@ -281,6 +271,7 @@ window.__ModuleLoader__.load({
 				try {
 					return mount();
 				} catch (error) {
+					unmount();
 					// A non-essential ornament must never take the page down with it.
 					if (typeof console !== "undefined") console.error("dsh-click-spark: mount failed", error);
 					return function () {};

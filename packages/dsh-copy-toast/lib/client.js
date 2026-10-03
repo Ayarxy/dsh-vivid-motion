@@ -724,6 +724,19 @@ window.__ModuleLoader__.load({
 		var stringToString = String.prototype.toString;
 		var arrayIterator = Array.prototype[Symbol.iterator];
 		var functionToString = Function.prototype.toString;
+		var promiseThen = Promise.prototype.then;
+		var clipboardItemTypes = platformMember("ClipboardItem", "types", "get");
+		var clipboardItemGetType = platformMember("ClipboardItem", "getType", "value");
+		var blobSize = platformMember("Blob", "size", "get");
+
+		/** Capture platform accessors so instance overrides are never run by observation. */
+		function platformMember(name, key, member) {
+			try {
+				var constructor = window[name];
+				var descriptor = constructor && Object.getOwnPropertyDescriptor(constructor.prototype, key);
+				return descriptor && typeof descriptor[member] === "function" ? descriptor[member] : null;
+			} catch (error) { return null; }
+		}
 
 		/** A focused text control owns its selection, even when it is empty. */
 		function isTextControl(node) {
@@ -761,7 +774,44 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * A cancelled cut may be a real editor-managed cut (Lexical does this).
+		 * Structural breaks have no textContent. Keep their text offsets and the
+		 * selected slice, so deleting a <br> or joining paragraphs can be verified
+		 * even when all text survives. Equivalent DOM rebuilds do not count.
+		 */
+		function cutBreakSnapshot(root, range) {
+			var breaks = [];
+			var position = 0;
+			var start = -1;
+			var end = -1;
+			function boundary(node, offset) {
+				if (!range) return;
+				if (node === range.startContainer && offset === range.startOffset) start = breaks.length;
+				if (node === range.endContainer && offset === range.endOffset) end = breaks.length;
+			}
+			function visit(node) {
+				if (node.nodeType === 3) {
+					if (range && node === range.startContainer) start = breaks.length;
+					if (range && node === range.endContainer) end = breaks.length;
+					position += node.data.length;
+					return;
+				}
+				if (node.nodeType !== 1) return;
+				var block = node !== root && /^(DIV|P|LI|UL|OL|BLOCKQUOTE|PRE|H[1-6]|TABLE|TR|TD|TH)$/.test(node.tagName);
+				if (block || node.tagName === "BR") breaks.push(position);
+				var index = 0;
+				for (var child = node.firstChild; child; child = child.nextSibling) {
+					boundary(node, index++);
+					visit(child);
+				}
+				boundary(node, index);
+				if (block) breaks.push(position);
+			}
+			visit(root);
+			return { breaks: breaks, start: start, end: end };
+		}
+
+		/**
+		 * Both native and editor-managed cuts (including Lexical) must delete.
 		 * Capture the exact expected deletion BEFORE dispatch finishes; clipboard
 		 * data alone proves a copy, while a collapsed selection proves nothing.
 		 */
@@ -800,7 +850,21 @@ window.__ModuleLoader__.load({
 				var from = String(prefix).length;
 				prefix.setEnd(range.endContainer, range.endOffset);
 				var to = String(prefix).length;
-				if (to <= from || to > before.length) return null;
+				if (to < from || to > before.length) return null;
+				if (to === from) {
+					var structure = cutBreakSnapshot(root, range);
+					if (structure.start < 0 || structure.end <= structure.start) return null;
+					var expectedBreaks = structure.breaks.slice(0, structure.start).concat(structure.breaks.slice(structure.end));
+					return function () {
+						try {
+							if (root.isConnected === false || root.textContent !== before) return false;
+							var afterBreaks = cutBreakSnapshot(root).breaks;
+							return afterBreaks.length === expectedBreaks.length && afterBreaks.every(function (offset, index) {
+								return offset === expectedBreaks[index];
+							});
+						} catch (error) { return false; }
+					};
+				}
 				var remaining = before.slice(0, from) + before.slice(to);
 				return function () {
 					try { return root.isConnected !== false && root.textContent === remaining; }
@@ -826,7 +890,8 @@ window.__ModuleLoader__.load({
 			return null;
 		}
 
-		function apiHasPayload(isText, args) {
+		/** Text is known synchronously; write() needs a stable snapshot of its items. */
+		function captureApiPayload(isText, args) {
 			if (!args.length) return false;
 			var value = args[0];
 			if (isText) {
@@ -854,11 +919,45 @@ window.__ModuleLoader__.load({
 				var iterator = dataProperty(value, Symbol.iterator);
 				if (!iterator || typeof iterator.descriptor.value !== "function") return false;
 				/* Also accept the intrinsic Array iterator from another realm. */
-				return iterator.descriptor.value === arrayIterator ||
+				var standardIterator = iterator.descriptor.value === arrayIterator ||
 					Reflect.apply(functionToString, iterator.descriptor.value, []) ===
 					Reflect.apply(functionToString, arrayIterator, []);
+				if (!standardIterator) return false;
+				var items = [];
+				for (var i = 0; i < length.value; i++) {
+					var entry = dataProperty(value, String(i));
+					/* An element getter must be evaluated only by the actual write. */
+					if (!entry || !("value" in entry.descriptor)) return false;
+					items.push(entry.descriptor.value);
+				}
+				return items;
 			} catch (error) {
 				return false;
+			}
+		}
+
+		/** Inspect native item representations only AFTER the underlying write succeeds. */
+		function confirmItemPayload(items, onPayload) {
+			if (!clipboardItemTypes || !clipboardItemGetType || !blobSize) return;
+			function inspect(blob) {
+				try {
+					if (Reflect.apply(blobSize, blob, []) > 0) onPayload();
+				} catch (error) {
+					/* Unknown payloads and observer failures cannot change the write result. */
+				}
+			}
+			for (var i = 0; i < items.length; i++) {
+				var types;
+				try { types = Reflect.apply(clipboardItemTypes, items[i], []); }
+				catch (error) { continue; }
+				for (var t = 0; t < types.length; t++) {
+					try {
+						var result = Reflect.apply(clipboardItemGetType, items[i], [types[t]]);
+						Reflect.apply(promiseThen, result, [inspect, function () {}]);
+					} catch (error) {
+						/* One unavailable format does not hide a nonempty representation. */
+					}
+				}
 			}
 		}
 
@@ -1014,10 +1113,10 @@ window.__ModuleLoader__.load({
 							if (data !== null) data.dispose();
 							if (!active) return;
 							if (type === "cut") {
-								/* Native Ctrl/Cmd+X and context-menu cut use the default action.
-								   Editor-managed cuts must ALSO have written data and deleted the range. */
-								if (selection.canCut && (!event.defaultPrevented ||
-									(customPayload && removedSelection !== null && removedSelection()))) {
+								/* beforeinput can block deletion without cancelling the cut event.
+								   Editor-managed cuts must additionally prove a clipboard payload. */
+								if (selection.canCut && removedSelection !== null && removedSelection() &&
+									(!event.defaultPrevented || customPayload)) {
 									confirm(operation, onFire);
 								}
 							} else if (event.defaultPrevented ? customPayload : selection.selected) {
@@ -1046,7 +1145,7 @@ window.__ModuleLoader__.load({
 					var patched = function () {
 						"use strict";
 						if (!active) return Reflect.apply(method, this, arguments);
-						var payload = apiHasPayload(name === "writeText", arguments);
+						var payload = captureApiPayload(name === "writeText", arguments);
 						var parent = currentOperation;
 						var operation = parent || { reported: false };
 						var result;
@@ -1054,11 +1153,16 @@ window.__ModuleLoader__.load({
 						try { result = Reflect.apply(method, this, arguments); }
 						finally { currentOperation = parent; }
 						if (!active || !payload) return result;
+						function onSuccess() {
+							if (!active || operation.reported) return;
+							if (payload === true) confirm(operation, onCopy);
+							else confirmItemPayload(payload, function () { confirm(operation, onCopy); });
+						}
 						try {
 							var then = result !== null && (typeof result === "object" || typeof result === "function") ? result.then : null;
 							if (typeof then === "function") {
-								Reflect.apply(then, result, [function () { confirm(operation, onCopy); }, function () {}]);
-							} else confirm(operation, onCopy);
+								Reflect.apply(then, result, [onSuccess, function () {}]);
+							} else onSuccess();
 						} catch (error) {
 							/* Even a nonstandard thenable's observer failure must not alter the API result. */
 						}

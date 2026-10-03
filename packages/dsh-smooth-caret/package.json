@@ -1,0 +1,17 @@
+{
+  "name": "dsh-smooth-caret",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH 输入光标动效：平滑位移、彗星拖尾与可选闪烁，支持聊天编辑器和询问作答框。",
+  "keywords": ["dsh", "dsh-plugin", "caret", "cursor", "motion"],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib", "locale"],
+  "dsh": { "client": { "platform": "web", "immediately": true } }
+}

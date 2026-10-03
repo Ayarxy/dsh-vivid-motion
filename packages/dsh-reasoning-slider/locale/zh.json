@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-reasoning-slider",
+    "description": "Codex 风格的推理强度滑块与模型菜单，跟随宿主实际档位，不显示默认选项。"
+  }
+}

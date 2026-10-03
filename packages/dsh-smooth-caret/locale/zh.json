@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-smooth-caret",
+    "description": "聊天与询问输入框的平滑光标，支持彗星拖尾、独立闪烁、颜色和粗细设置。"
+  }
+}
