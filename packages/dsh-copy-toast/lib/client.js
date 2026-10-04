@@ -6,6 +6,7 @@ window.__ModuleLoader__.load({
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 
 		var React = require("react");
+		var ReactDOM = require("react-dom");
 
 		/**
 		 * Copy Toast — the "已复制" / "已剪切" confirmation.
@@ -29,11 +30,11 @@ window.__ModuleLoader__.load({
 		 * anything is actually selected. A cut has no async analogue: only a user
 		 * can cut.
 		 *
-		 * The stack renders into the `shell.overlay` slot, so the layer belongs to
-		 * the app frame rather than to `document.body` and the plugin's unload
-		 * takes the whole thing with it. React owns the layer element and the
-		 * stylesheet; the imperative engine owns the toasts inside it, which is
-		 * what lets the spring maths run on real elements.
+		 * The `shell.overlay` slot owns the stack's lifecycle, while a React
+		 * portal places it in `document.body` above the host's modal masks.
+		 * React owns the layer element and stylesheet, including their removal
+		 * on unload; the imperative engine owns the toasts inside the layer,
+		 * which is what lets the spring maths run on real elements.
 		 */
 
 		// ── tunables ───────────────────────────────────────────────────────────
@@ -73,9 +74,12 @@ window.__ModuleLoader__.load({
 		 * The tokens are the raised-surface ones: `bg-layer-1` is the design's
 		 * white panel in the light theme, and `deepseek-450` is the brand blue of
 		 * the icon chip, which stays blue in both themes.
+		 * The fixed body portal uses the host Toast's z-index (1100), above
+		 * Modal masks (1000). Raising a child of shell.overlay (20) cannot do so.
 		 */
 		var CSS = `
-.dct-layer{position:absolute;bottom:26px;left:50%;width:0;height:0;transform:translateX(-50%);z-index:60;pointer-events:none}
+.dct-layer{position:fixed;bottom:26px;left:50%;width:0;height:0;transform:translateX(-50%);z-index:1100;pointer-events:none}
+.dct-announcer{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0;pointer-events:none}
 .dct-slot{position:absolute;bottom:0;left:50%;width:max-content;transform-origin:50% 100%;pointer-events:none;transition:opacity .18s}
 .dct-toast{
 	position:relative;display:flex;align-items:center;gap:10px;
@@ -175,8 +179,9 @@ window.__ModuleLoader__.load({
 		 * the element itself, so the two never reconcile the same node.
 		 *
 		 * @param container - the layer element the stack appends its toasts to.
+		 * @param announcer - the already mounted, empty status region.
 		 */
-		function createToastStack(container) {
+		function createToastStack(container, announcer) {
 			/** list[0] is the front (newest) toast. */
 			var list = [];
 			/** Every toast this engine created, including ones on their way out:
@@ -186,6 +191,7 @@ window.__ModuleLoader__.load({
 			var expanded = false;
 			var hovering = false;
 			var disposed = false;
+			var announcementTimer = null;
 			var reduce = prefersReduce();
 			var mq = typeof window.matchMedia === "function" ? window.matchMedia(REDUCE_QUERY) : null;
 
@@ -619,13 +625,20 @@ window.__ModuleLoader__.load({
 			/** Raise one toast. Returns its handle, or null when disposed. */
 			function show(title) {
 				if (disposed) return null;
+				/* A stable region must exist before its content changes. Clearing
+				   in a separate task also makes consecutive identical messages observable. */
+				clearTimeout(announcementTimer);
+				announcer.textContent = "";
+				announcementTimer = setTimeout(function () {
+					announcementTimer = null;
+					if (!disposed) announcer.textContent = title;
+				}, 0);
 
 				var slot = document.createElement("div");
 				slot.className = "dct-slot";
 
 				var t = document.createElement("div");
 				t.className = "dct-toast";
-				t.setAttribute("role", "status");
 
 				var icon = document.createElement("span");
 				icon.className = "dct-icon";
@@ -699,6 +712,9 @@ window.__ModuleLoader__.load({
 			function dispose() {
 				if (disposed) return;
 				disposed = true;
+				clearTimeout(announcementTimer);
+				announcementTimer = null;
+				announcer.textContent = "";
 				if (mq !== null) {
 					if (typeof mq.removeEventListener === "function") mq.removeEventListener("change", onReduceChange);
 					else if (typeof mq.removeListener === "function") mq.removeListener(onReduceChange);
@@ -873,7 +889,7 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		/** Never invoke an application getter, toString, or iterator to inspect an API argument. */
+		/** Avoid getters/conversions/iteration. Descriptor access can still invoke Proxy traps. */
 		function dataProperty(object, key) {
 			try {
 				for (var owner = object; owner !== null; owner = Object.getPrototypeOf(owner)) {
@@ -887,7 +903,7 @@ window.__ModuleLoader__.load({
 			return null;
 		}
 
-		/** Text is known synchronously; write() needs a stable snapshot of its items. */
+		/** Snapshot after forwarding the write, before control returns to its caller. */
 		function captureApiPayload(isText, args, realmStringToString) {
 			if (!args.length) return false;
 			var value = args[0];
@@ -1044,6 +1060,18 @@ window.__ModuleLoader__.load({
 				return active && isCurrent();
 			}
 
+			function dispatchedOperation() {
+				/* eventPhase resets to NONE after dispatch. A queued timer alone
+				   must never associate an unrelated later write with an old cut. */
+				for (var i = operations.events.length - 1; i >= 0; i--) {
+					var entry = operations.events[i];
+					if (entry.event.eventPhase > 0 && !entry.operation.reported && entry.operation.isCurrent()) {
+						return entry.operation;
+					}
+				}
+				return null;
+			}
+
 			function confirm(operation, callback) {
 				if (!isLive() || !operation.isCurrent() || operation.reported) return;
 				operation.reported = true;
@@ -1112,35 +1140,61 @@ window.__ModuleLoader__.load({
 			function bindClipboardEvent(type, onFire) {
 				function handler(event) {
 					if (!isLive() || event.isTrusted !== true) return;
+					var operation = operations.current || dispatchedOperation() || { reported: false, isCurrent: isLive };
+					if (operation.reported || !operation.isCurrent()) return;
 					var selection = selectionForClipboard(event, view, doc);
 					var removedSelection = type === "cut" ? captureCutRemoval(event, selection, view, doc) : null;
 					var data = null;
 					try { data = observeEventData(event.clipboardData); } catch (error) {}
-					var operation = operations.current || { reported: false, isCurrent: isLive };
-					var entry = { timer: null, data: data };
-					pending.push(entry);
-					try {
-						entry.timer = window.setTimeout(function () {
-							var index = pending.indexOf(entry);
-							if (index !== -1) pending.splice(index, 1);
-							var customPayload = data !== null && data.hasPayload();
-							if (data !== null) data.dispose();
-							if (!isLive()) return;
-							if (type === "cut") {
-								/* beforeinput can block deletion without cancelling the cut event.
-								   Editor-managed cuts must additionally prove a clipboard payload. */
-								if (selection.canCut && removedSelection !== null && removedSelection() &&
-									(!event.defaultPrevented || customPayload)) {
-									confirm(operation, onFire);
-								}
-							} else if (event.defaultPrevented ? customPayload : selection.selected) {
-								confirm(operation, onFire);
-							}
-						}, 0);
-					} catch (error) {
-						pending.splice(pending.indexOf(entry), 1);
-						if (data !== null) data.dispose();
+					var ready = false;
+					var customPayload = false;
+					var written = false;
+					var entry = { timer: null, event: event, operation: operation };
+					function release() {
+						if (data !== null) { data.dispose(); data = null; }
+						var index = operations.events.indexOf(entry);
+						if (index !== -1) operations.events.splice(index, 1);
 					}
+					entry.dispose = function () {
+						window.clearTimeout(entry.timer);
+						entry.timer = null;
+						var index = pending.indexOf(entry);
+						if (index !== -1) pending.splice(index, 1);
+						release();
+					};
+					function check() {
+						entry.timer = null;
+						var index = pending.indexOf(entry);
+						if (index !== -1) pending.splice(index, 1);
+						if (!ready) {
+							ready = true;
+							customPayload = data !== null && data.hasPayload();
+							release();
+						}
+						if (!isLive() || !operation.isCurrent() || operation.reported) return;
+						/* API completion queues a new task so the editor's await/then
+						   continuation can delete first. No polling or changed-input guesswork. */
+						var confirmed = type === "cut"
+							? selection.canCut && removedSelection !== null && removedSelection() &&
+								(!event.defaultPrevented || customPayload || written)
+							: written || (event.defaultPrevented ? customPayload : selection.selected);
+						if (!confirmed) return;
+						if (operation.event === entry) confirm(operation, onFire);
+						else operation.event.write();
+					}
+					function schedule() {
+						if (!isLive() || !operation.isCurrent() || operation.reported) { entry.dispose(); return; }
+						if (entry.timer !== null) return;
+						pending.push(entry);
+						try { entry.timer = window.setTimeout(check, 0); }
+						catch (error) {
+							entry.dispose();
+						}
+					}
+					entry.write = function () { written = true; schedule(); };
+					if (!operation.event) operation.event = entry;
+					operations.events.push(entry);
+					schedule();
 				}
 				doc.addEventListener(type, handler, { capture: true });
 				return function () { doc.removeEventListener(type, handler, { capture: true }); };
@@ -1159,18 +1213,27 @@ window.__ModuleLoader__.load({
 					var patched = function () {
 						"use strict";
 						if (!isLive()) return Reflect.apply(method, this, arguments);
-						var payload = captureApiPayload(name === "writeText", arguments, realmStringToString);
 						var parent = operations.current;
-						var operation = parent || { reported: false, isCurrent: isLive };
+						var operation = parent || dispatchedOperation() || { reported: false, isCurrent: isLive };
 						var result;
 						operations.current = operation;
 						try { result = Reflect.apply(method, this, arguments); }
 						finally { operations.current = parent; }
+						if (!isLive()) return result;
+						/* Native WebIDL conversion consumes the sequence synchronously.
+						   Even descriptor reads may invoke Proxy traps, so inspection must
+						   never run before that conversion or replace a synchronous failure. */
+						var payload = captureApiPayload(name === "writeText", arguments, realmStringToString);
 						if (!isLive() || !payload) return result;
+						function onPayload() {
+							if (!isLive() || !operation.isCurrent() || operation.reported) return;
+							if (operation.event) operation.event.write();
+							else confirm(operation, onCopy);
+						}
 						function onSuccess() {
 							if (!isLive() || !operation.isCurrent() || operation.reported) return;
-							if (payload === true) confirm(operation, onCopy);
-							else confirmItemPayload(payload, function () { confirm(operation, onCopy); }, readers);
+							if (payload === true) onPayload();
+							else confirmItemPayload(payload, onPayload, readers);
 						}
 						try {
 							var then = result !== null && (typeof result === "object" || typeof result === "function") ? result.then : null;
@@ -1187,9 +1250,10 @@ window.__ModuleLoader__.load({
 				});
 			}
 
-			/* Shared operations only correlate nested/synchronous API calls and their
-			   execCommand events. An asynchronous third-party fallback after the call
-			   stack unwinds has no reliable identity; do not debounce distinct copies.
+			/* Shared operations correlate nested API calls and writes begun during
+			   a trusted DOM event's dispatch, including execCommand fallbacks.
+			   A new asynchronous call after dispatch has no reliable identity;
+			   do not debounce distinct copies.
 			   Unknown custom coercions/iterables are deliberately not confirmed: observing
 			   them would repeat user code or change arguments/exception timing. Likewise,
 			   unpatchable DataTransfer mutations (or saved native methods bypassing these
@@ -1197,11 +1261,7 @@ window.__ModuleLoader__.load({
 			return function () {
 				if (!active) return;
 				active = false;
-				for (var t = 0; t < pending.length; t++) {
-					window.clearTimeout(pending[t].timer);
-					if (pending[t].data !== null) pending[t].data.dispose();
-				}
-				pending = [];
+				while (pending.length) pending[0].dispose();
 				for (var d = disposers.length - 1; d >= 0; d--) {
 					try { disposers[d](); } catch (error) {
 						/* Keep unwinding: one failed restore must not strand the rest. */
@@ -1215,7 +1275,7 @@ window.__ModuleLoader__.load({
 		function installCopyWatcher(onCopy, onCut) {
 			var active = true;
 			var documents = new Map();
-			var operations = { current: null };
+			var operations = { current: null, events: [] };
 
 			function isCurrent(record) {
 				if (!active || documents.get(record.doc) !== record) return false;
@@ -1304,6 +1364,7 @@ window.__ModuleLoader__.load({
 				documents.forEach(function (record) { record.dispose(); });
 				documents.clear();
 				operations.current = null;
+				operations.events = [];
 			};
 		}
 
@@ -1345,19 +1406,27 @@ window.__ModuleLoader__.load({
 		 */
 		function CopyToastLayer() {
 			var hostRef = React.useRef(null);
+			var announcerRef = React.useRef(null);
 			React.useEffect(function () {
-				var engine = createToastStack(hostRef.current);
+				var engine = createToastStack(hostRef.current, announcerRef.current);
 				stack = engine;
 				return function () {
 					if (stack === engine) stack = null;
 					engine.dispose();
 				};
 			}, []);
-			return React.createElement(
-				React.Fragment,
-				null,
-				React.createElement("style", { dangerouslySetInnerHTML: { __html: CSS } }),
-				React.createElement("div", { className: "dct-layer", ref: hostRef })
+			return ReactDOM.createPortal(
+				React.createElement(
+					React.Fragment,
+					null,
+					React.createElement("style", { dangerouslySetInnerHTML: { __html: CSS } }),
+					React.createElement("div", { className: "dct-layer", ref: hostRef, "aria-hidden": true }),
+					React.createElement("div", {
+						className: "dct-announcer", ref: announcerRef,
+						role: "status", "aria-live": "polite", "aria-atomic": true
+					})
+				),
+				document.body
 			);
 		}
 
@@ -1405,8 +1474,8 @@ window.__ModuleLoader__.load({
 				}, "dsh-copy-toast: dictionaries");
 			}
 
-			/* The frame-wide floating layer: additive seat, click-through, and it
-			   sits above every column and outside their scroll containers. */
+			/* Keep lifecycle ownership in the slot; the body portal escapes the
+			   frame's stacking context and clipping without a separate React root. */
 			ctx.slots.inject("shell.overlay", function () {
 				return ctx.slots.register(
 					{ name: "shell.overlay", id: "dsh-copy-toast", order: 100 },

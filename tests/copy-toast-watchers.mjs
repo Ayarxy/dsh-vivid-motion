@@ -41,7 +41,9 @@ function fixture(clipboard = {}) {
   let seq = 0, registration, selection = null;
   clipboard.writeText ??= function (value) { writes.push(String(value)); return Promise.resolve(); };
   clipboard.write ??= async function (items) {
-    for (const item of items) for (const type of nativeTypes.call(item)) {
+    // WebIDL consumes the sequence synchronously, before the write promise settles.
+    const sequence = Array.from(items);
+    for (const item of sequence) for (const type of nativeTypes.call(item)) {
       writes.push(await nativeGetType.call(item, type));
     }
   };
@@ -67,6 +69,12 @@ function fixture(clipboard = {}) {
     clipboard, calls, writes, document, listeners, timers, dispose,
     select(value) { selection = value; },
     emit(event) { listeners.get(event.type)?.(event); },
+    dispatch(event, handler) {
+      event.eventPhase = 1;
+      listeners.get(event.type)?.(event);
+      event.eventPhase = 2;
+      try { return handler(); } finally { event.eventPhase = 0; }
+    },
     flush() { for (const [id, fn] of timers) { timers.delete(id); fn(); } },
   };
 }
@@ -291,6 +299,138 @@ test('write() snapshots item references before the caller mutates its array', as
     assert.deepEqual(f.calls, text ? ['copy'] : []);
     f.dispose();
   }
+});
+
+test('argument inspection cannot alter the sequence consumed by the underlying write', async () => {
+  for (const throws of [false, true]) {
+    const f = fixture();
+    const items = ['first', 'second'].map(text => new ClipboardItem({ 'text/plain': text }));
+    let probes = 0;
+    const proxy = new Proxy(items, {
+      getOwnPropertyDescriptor(target, key) {
+        probes++;
+        if (throws) throw new Error('inspection failed');
+        if (key === 'length') target.length = 0;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    await f.clipboard.write(proxy); await settle();
+    assert.ok(probes > 0);
+    assert.deepEqual(await Promise.all(f.writes.map(blob => blob.text())), ['first', 'second']);
+    assert.deepEqual(f.calls, [], 'unknown payload inspection must only suppress feedback');
+    f.dispose();
+  }
+});
+
+test('a synchronous write failure is preserved without inspecting its argument', () => {
+  const failure = new Error('native failure');
+  const f = fixture({ write() { throw failure; } });
+  let probes = 0;
+  const proxy = new Proxy([new ClipboardItem({ 'text/plain': 'hello' })], {
+    getOwnPropertyDescriptor() { probes++; throw new Error('observer failure'); },
+  });
+  assert.throws(() => f.clipboard.write(proxy), error => error === failure);
+  assert.equal(probes, 0);
+  f.dispose();
+});
+
+test('a cut using the clipboard API confirms once after await and exact deletion', async () => {
+  for (const method of ['writeText', 'write']) {
+    const f = fixture(), field = control(), event = cut(field);
+    await f.dispatch(event, async () => {
+      event.defaultPrevented = true;
+      await f.clipboard[method](method === 'writeText' ? 'BCD' : [new ClipboardItem({ 'text/plain': 'BCD' })]);
+      field.value = 'AE';
+    });
+    await settle(); f.flush();
+    assert.deepEqual(f.calls, ['cut']);
+    assert.equal(f.timers.size, 0);
+    f.dispose();
+  }
+});
+
+test('a delayed API cut is checked again after write completion, without polling', async () => {
+  let finish;
+  const result = new Promise(resolve => { finish = resolve; });
+  const f = fixture({ writeText: () => result }), field = control(), event = cut(field);
+  const handling = f.dispatch(event, async () => {
+    event.defaultPrevented = true;
+    await f.clipboard.writeText('BCD');
+    field.value = 'AE';
+  });
+  f.flush();
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.timers.size, 0, 'pending writes must not start a polling loop');
+  finish(); await handling; await settle(); f.flush();
+  assert.deepEqual(f.calls, ['cut']);
+  f.dispose();
+});
+
+test('API-based cuts require a successful nonempty write and the expected deletion', async () => {
+  for (const outcome of ['rejected', 'empty', 'unchanged', 'wrong deletion']) {
+    const f = fixture(outcome === 'rejected' ? { writeText: () => Promise.reject(new Error('denied')) } : {});
+    const field = control(), event = cut(field);
+    await f.dispatch(event, async () => {
+      event.defaultPrevented = true;
+      try { await f.clipboard.writeText(outcome === 'empty' ? '' : 'BCD'); } catch {}
+      if (outcome === 'wrong deletion') field.value = 'AB';
+      else if (outcome !== 'unchanged') field.value = 'AE';
+    });
+    await settle(); f.flush();
+    assert.deepEqual(f.calls, [], outcome);
+    f.dispose();
+  }
+});
+
+test('DOM and API writes during one event share feedback, later copies remain independent', async () => {
+  const f = fixture(), field = control();
+  for (const type of ['copy', 'cut']) {
+    field.value = 'ABCDE';
+    const event = { ...cut(field), type };
+    const write = f.dispatch(event, () => {
+      event.defaultPrevented = true;
+      event.clipboardData.setData('text/plain', 'BCD');
+      if (type === 'cut') field.value = 'AE';
+      return f.clipboard.writeText('BCD');
+    });
+    // Same task, but after dispatch: this must have a new operation identity.
+    await f.clipboard.writeText('independent');
+    await write; await settle(); f.flush();
+    assert.deepEqual(f.calls.splice(0), ['copy', type]);
+  }
+  f.dispose();
+});
+
+test('disabling a pending API cut prevents a late confirmation and restores event data', async () => {
+  let finish;
+  const f = fixture({ writeText: () => new Promise(resolve => { finish = resolve; }) });
+  const field = control(), event = cut(field);
+  const handling = f.dispatch(event, async () => {
+    event.defaultPrevented = true;
+    await f.clipboard.writeText('BCD');
+    field.value = 'AE';
+  });
+  f.dispose(); finish(); await handling; await settle(); f.flush();
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.timers.size, 0);
+  assert.equal(Object.hasOwn(event.clipboardData, 'setData'), false);
+});
+
+test('a nested execCommand-style copy can provide payload evidence for its outer cut', () => {
+  const f = fixture(), field = control(), event = cut(field);
+  f.dispatch(event, () => {
+    event.defaultPrevented = true;
+    const copy = { ...cut(field), type: 'copy' };
+    f.dispatch(copy, () => {
+      copy.defaultPrevented = true;
+      copy.clipboardData.setData('text/plain', 'BCD');
+    });
+    field.value = 'AE';
+  });
+  f.flush();
+  assert.deepEqual(f.calls, ['cut']);
+  assert.equal(f.timers.size, 0);
+  f.dispose();
 });
 
 test('payload inspection bypasses instance overrides without calling application code', async () => {

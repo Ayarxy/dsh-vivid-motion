@@ -207,6 +207,7 @@ check('module registers under the package name', registration !== null && regist
 
 const requireStub = (spec) => {
 	if (spec === 'react') return React;
+	if (spec === 'react-dom') return { createPortal: (children, container) => ({ children, container }) };
 	throw new Error('unexpected require(' + spec + ')');
 };
 const mod = registration.factory(requireStub);
@@ -269,13 +270,17 @@ const entry = slotRegistrations[0];
 check('registered with a fresh id and an order', entry.options.id === 'dsh-copy-toast' && entry.options.name === 'shell.overlay' && typeof entry.options.order === 'number', JSON.stringify(entry.options));
 
 // ── mount the layer the way React would ─────────────────────────────────────
-const tree = entry.component({});
-check('layer renders a stylesheet and a container', tree.children.length === 2 && tree.children[0].type === 'style' && tree.children[1].props.className === 'dct-layer');
+const portal = entry.component({});
+check('layer portals into document.body', portal.container === documentStub.body);
+const tree = portal.children;
+check('layer renders a stylesheet, visual container and announcer', tree.children.length === 3 && tree.children[0].type === 'style' && tree.children[1].props.className === 'dct-layer' && tree.children[2].props.role === 'status');
 check('stylesheet carries the prefixed rules', /\.dct-toast\{/.test(tree.children[0].props.dangerouslySetInnerHTML.__html) && !/(^|[^t])\.toast\{/.test(tree.children[0].props.dangerouslySetInnerHTML.__html));
 
 const container = new El('div');
 container.className = 'dct-layer';
 tree.children[1].props.ref.current = container;
+const announcer = new El('div');
+tree.children[2].props.ref.current = announcer;
 check('one mount effect', effects.length === 1);
 const unmount = effects[0]();
 effects.length = 0;
@@ -295,7 +300,7 @@ copyListeners[0]({ isTrusted: true, defaultPrevented: false });
 await tick();
 check('document copy raises one toast', container.children.length === 1, `children=${container.children.length}`);
 const firstToast = front().children[0];
-check('toast carries role=status', firstToast.attributes.role === 'status');
+check('only the persistent announcer exposes live feedback', firstToast.attributes.role === undefined && tree.children[1].props['aria-hidden'] === true && tree.children[2].props['aria-live'] === 'polite');
 check('toast text is the localized confirmation', firstToast.children[1].textContent === '已复制', JSON.stringify(firstToast.children[1].textContent));
 check('toast ran an entrance animation', firstToast.animations.length >= 1);
 check('icon chip animation ran too', firstToast.children[0].animations.length >= 1);
@@ -390,6 +395,7 @@ const patchedWriteText = Clipboard.prototype.writeText;
 unmount();
 await tick();
 check('unmount empties the layer', container.children.length === 0, `children=${container.children.length}`);
+check('unmount clears the announcer', announcer.textContent === '');
 check('unmount keeps the independent watcher patch installed', Clipboard.prototype.writeText === patchedWriteText);
 check('the watcher outlives the layer by design', (documentStub.listeners.copy || []).length === 1);
 

@@ -43,7 +43,8 @@ function installClipboardFixture() {
       this.texts.push(String(value));
     }
     async write(items) {
-      for (const item of items) for (const type of types.call(item)) await getType.call(item, type);
+      const sequence = Array.from(items);
+      for (const item of sequence) for (const type of types.call(item)) await getType.call(item, type);
     }
   }
   Object.defineProperty(window, 'ClipboardItem', { configurable: true, value: Item });
@@ -281,6 +282,28 @@ test('synchronous calls across realms share one operation while consecutive copi
   await child.clipboard.writeText('hello'); await tick();
   assert.deepEqual(f.calls, ['copy', 'copy']);
 });
+
+for (const removed of [false, true]) {
+  test(`a child cut delegated to the parent ${removed ? 'is silent after removal' : 'keeps its cut identity'}`, async t => {
+    const f = fixture(t), child = f.frame(), pending = deferred();
+    f.root.writeText = f.root.clipboard.writeText = () => pending.promise;
+    f.start();
+    const input = selectControl(child);
+    const event = child.emit('cut', input, { eventPhase: 2 });
+    event.defaultPrevented = true;
+    const result = f.root.clipboard.writeText('BCD');
+    event.eventPhase = 0;
+    await tick();
+    assert.deepEqual(f.calls, []);
+    if (removed) child.frame.remove();
+    pending.resolve(); await result;
+    input.value = 'AE'; await tick();
+    assert.deepEqual(f.calls, removed ? [] : ['cut']);
+    if (removed) assertReleased(child);
+    await f.root.clipboard.writeText('independent parent copy'); await tick();
+    assert.equal(f.calls.at(-1), 'copy');
+  });
+}
 
 test('a frame operation delegated to the parent is silent after its originating frame is removed', async t => {
   const f = fixture(t), child = f.frame(), pending = deferred();

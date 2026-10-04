@@ -59,8 +59,8 @@ const state = { groups: [{ id: 'fixture', name: 'Fixture', models: Array.from({ 
 const directory = { subscribe: () => () => {}, getSnapshot: () => state };
 async function click(selector) { await act(async () => q(selector).click()); }
 async function escape() { await act(async () => q('.dsh-reasoning-panel').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))); }
-async function mount({ still = false, top = 600, listHeight = 333 } = {}) {
-  reduced = still; anchorBox = { left: 430, top, width: 120, height: 28 }; modelHeight = listHeight;
+async function mount({ still = false, left = 430, top = 600, listHeight = 333 } = {}) {
+  reduced = still; anchorBox = { left, top, width: 120, height: 28 }; modelHeight = listHeight;
   root = createRoot(q('#root'));
   await act(async () => root.render(React.createElement(React.StrictMode, null, React.createElement(ModelPicker, { directory, load() {}, select: async () => ({ ok: true }), available: true, locked: false }))));
   await click('.dsh-reasoning-trigger');
@@ -72,6 +72,29 @@ async function unmount() {
   assert.equal(mediaListeners.size, 0, 'motion preference listeners removed');
 }
 function advance(ms) { for (const animation of [...animations]) animation.currentTime = Math.min(animation.options.duration, animation.currentTime + ms); }
+
+test('opening anchor stays fixed through label/composer movement and is refreshed on reopen', async () => {
+  await mount();
+  const panel = q('.dsh-reasoning-panel'), content = q('.dsh-reasoning-content');
+  const left = panel.style.left, top = panel.style.top;
+  await act(async () => {
+    anchorBox = { left: 510, top: 510, width: 220, height: 40 };
+    for (const observer of observers) observer.callback([{ target: content }]);
+    window.dispatchEvent(new Event('scroll'));
+    window.dispatchEvent(new Event('resize'));
+  });
+  assert.equal(panel.style.left, left, 'label width and horizontal movement do not shift the popup');
+  assert.equal(panel.style.top, top, 'composer movement does not shift the popup');
+  await click('.dsh-reasoning-model-link');
+  assert.equal(panel.style.left, left, 'pane switching keeps the opening center');
+  for (const frame of active(panel).keyframes) closeTo(parseFloat(frame.top) + parseFloat(frame.height), 592);
+  await click('.dsh-reasoning-trigger');
+  await click('.dsh-reasoning-trigger');
+  const reopened = q('.dsh-reasoning-panel');
+  closeTo(parseFloat(reopened.style.left) + 128, anchorBox.left + anchorBox.width / 2);
+  closeTo(parseFloat(reopened.style.top) + 94 + 8, anchorBox.top);
+  await unmount();
+});
 
 test('model menu rises with a damped rebound, fixed bottom edge, full-size text and immediate keyboard focus', async () => {
   await mount();
@@ -121,11 +144,11 @@ test('content resizing retargets continuously; list scroll and focus do not canc
   const height = valueAt(first, 'height');
   await act(async () => {
     // The first ResizeObserver delivery can arrive after a quick click.
-    for (const observer of observers) observer.callback([{ target: q('.dsh-reasoning-trigger') }, { target: content }]);
+    for (const observer of observers) observer.callback([{ target: content }]);
     q('[role=menu]').dispatchEvent(new Event('scroll'));
     q('[aria-checked=true]').scrollIntoView();
   });
-  assert.equal(active(panel), first, 'unchanged anchor observations and internal scrolling keep the shell animation');
+  assert.equal(active(panel), first, 'unchanged content observations and internal scrolling keep the shell animation');
   await act(async () => { modelHeight += 40; for (const observer of observers) observer.callback([{ target: content }]); });
   const resized = active(panel);
   assert.ok(first.cancelled && resized !== first);
@@ -133,9 +156,38 @@ test('content resizing retargets continuously; list scroll and focus do not canc
   assert.equal(resized.keyframes.at(-1).height, '390px');
   assert.equal(active(content), entrance, 'retargeting does not restart or drop the fade');
   await act(async () => { anchorBox.top -= 40; window.dispatchEvent(new Event('scroll')); });
-  assert.equal(animations.size, 0, 'viewport movement tracks the anchor immediately');
-  assert.equal(panel.style.top, '162px');
+  assert.equal(active(panel), resized, 'external scrolling does not interrupt the shell animation');
+  assert.equal(active(content), entrance);
+  assert.equal(panel.style.top, '202px', 'content resizes around the original anchor');
   await unmount();
+});
+
+test('initial edge avoidance and viewport resizing use the opening anchor', async () => {
+  await mount({ left: 0 });
+  assert.equal(q('.dsh-reasoning-panel').style.left, '12px');
+  await unmount();
+  const width = window.innerWidth, height = window.innerHeight;
+  await mount({ left: width - 40 });
+  try {
+    const panel = q('.dsh-reasoning-panel');
+    closeTo(parseFloat(panel.style.left) + 256, width - 12);
+    await act(async () => {
+      anchorBox.left = 0; anchorBox.top = 20;
+      window.innerWidth = 400; window.innerHeight = 300;
+      window.dispatchEvent(new Event('resize'));
+    });
+    closeTo(parseFloat(panel.style.left) + 256, 388);
+    closeTo(parseFloat(panel.style.top) + 94, 288);
+    await act(async () => {
+      window.innerWidth = width; window.innerHeight = height;
+      window.dispatchEvent(new Event('resize'));
+    });
+    closeTo(parseFloat(panel.style.left) + 256, width - 12);
+    assert.equal(panel.style.top, '498px', 'window growth restores placement around the opening anchor');
+  } finally {
+    window.innerWidth = width; window.innerHeight = height;
+    await unmount();
+  }
 });
 
 test('rebound respects the top gutter and below-anchor fallback', async () => {

@@ -759,7 +759,10 @@ window.__ModuleLoader__.load({
       if (!open) { setPlacement(null); return; }
       const anchor = anchorRef.current, panel = panelRef.current, content = contentRef.current;
       if (!anchor || !panel || !content) return;
-      let target = null, lastPane = null, motion = null, entrance = null, anchorRect = null, contentLimit = null;
+      // Capture the anchor once per opening. Effort/model label changes and
+      // composer movement must not move a popup the user is already operating.
+      const rect = anchor.getBoundingClientRect();
+      let target = null, lastPane = null, motion = null, entrance = null, contentLimit = null;
       const stop = (keepEntrance = false) => {
         if (motion) { motion.animation.onfinish = null; motion.animation.cancel(); }
         motion = null;
@@ -767,8 +770,6 @@ window.__ModuleLoader__.load({
       };
       const update = () => {
         const { pane, reduced } = options.current;
-        const rect = anchor.getBoundingClientRect();
-        anchorRect = rect;
         const style = window.getComputedStyle(panel);
         const chrome = [style.paddingTop, style.paddingBottom, style.borderTopWidth, style.borderBottomWidth]
           .reduce((sum, value) => sum + (parseFloat(value) || 0), 0);
@@ -821,31 +822,21 @@ window.__ModuleLoader__.load({
         }
         animation.onfinish = () => { if (motion?.animation === animation) stop(); };
       };
-      // A viewport/anchor move must track immediately, not trail the input.
-      const reposition = event => {
-        // Menu focus/scrollIntoView and list scrolling do not move the anchor.
-        if (event?.target instanceof Node && panel.contains(event.target)) return;
+      // Reapply viewport bounds around the opening anchor when the window
+      // resizes. Scrolling does not move this fixed popup or cancel its motion.
+      const reposition = () => {
         stop(); update();
       };
       controller.current = update;
       update();
-      const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver((entries = []) => {
-        if (entries.some(entry => entry.target === anchor)) {
-          const rect = anchor.getBoundingClientRect();
-          if (rect.top !== anchorRect.top || rect.bottom !== anchorRect.bottom) { reposition(); return; }
-        }
-        update();
-      });
-      observer?.observe(anchor);
+      const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
       observer?.observe(content);
       window.addEventListener("resize", reposition);
-      window.addEventListener("scroll", reposition, true);
       return () => {
         controller.current = null;
         stop();
         observer?.disconnect();
         window.removeEventListener("resize", reposition);
-        window.removeEventListener("scroll", reposition, true);
       };
     }, [open, anchorRef, panelRef, contentRef, gap, margin]);
     React.useLayoutEffect(() => { controller.current?.(); }, [pane, reduced]);
