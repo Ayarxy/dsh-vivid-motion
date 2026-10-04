@@ -725,14 +725,11 @@ window.__ModuleLoader__.load({
 		var arrayIterator = Array.prototype[Symbol.iterator];
 		var functionToString = Function.prototype.toString;
 		var promiseThen = Promise.prototype.then;
-		var clipboardItemTypes = platformMember("ClipboardItem", "types", "get");
-		var clipboardItemGetType = platformMember("ClipboardItem", "getType", "value");
-		var blobSize = platformMember("Blob", "size", "get");
 
 		/** Capture platform accessors so instance overrides are never run by observation. */
-		function platformMember(name, key, member) {
+		function platformMember(view, name, key, member) {
 			try {
-				var constructor = window[name];
+				var constructor = view[name];
 				var descriptor = constructor && Object.getOwnPropertyDescriptor(constructor.prototype, key);
 				return descriptor && typeof descriptor[member] === "function" ? descriptor[member] : null;
 			} catch (error) { return null; }
@@ -753,15 +750,15 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		function selectionForClipboard(event) {
+		function selectionForClipboard(event, view, doc) {
 			try {
 				var control = isTextControl(event.target) ? event.target :
-					(isTextControl(document.activeElement) ? document.activeElement : null);
+					(isTextControl(doc.activeElement) ? doc.activeElement : null);
 				if (control !== null) {
 					var selected = hasSelectionIn(control);
 					return { selected: selected, canCut: selected && !control.readOnly && !control.disabled };
 				}
-				var sel = typeof window.getSelection === "function" ? window.getSelection() : null;
+				var sel = typeof view.getSelection === "function" ? view.getSelection() : null;
 				if (!sel || !sel.rangeCount || !String(sel).length) return { selected: false, canCut: false };
 				function editable(node) {
 					var element = node && (node.nodeType === 1 ? node : node.parentElement || node.parentNode);
@@ -815,11 +812,11 @@ window.__ModuleLoader__.load({
 		 * Capture the exact expected deletion BEFORE dispatch finishes; clipboard
 		 * data alone proves a copy, while a collapsed selection proves nothing.
 		 */
-		function captureCutRemoval(event, selection) {
+		function captureCutRemoval(event, selection, view, doc) {
 			if (!selection.canCut) return null;
 			try {
 				var control = isTextControl(event.target) ? event.target :
-					(isTextControl(document.activeElement) ? document.activeElement : null);
+					(isTextControl(doc.activeElement) ? doc.activeElement : null);
 				if (control !== null) {
 					var value = control.value;
 					var start = control.selectionStart;
@@ -833,7 +830,7 @@ window.__ModuleLoader__.load({
 					};
 				}
 
-				var sel = typeof window.getSelection === "function" ? window.getSelection() : null;
+				var sel = typeof view.getSelection === "function" ? view.getSelection() : null;
 				if (!sel || sel.rangeCount !== 1 || typeof sel.getRangeAt !== "function") return null;
 				var range = sel.getRangeAt(0);
 				var root = range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement;
@@ -891,7 +888,7 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Text is known synchronously; write() needs a stable snapshot of its items. */
-		function captureApiPayload(isText, args) {
+		function captureApiPayload(isText, args, realmStringToString) {
 			if (!args.length) return false;
 			var value = args[0];
 			if (isText) {
@@ -907,7 +904,8 @@ window.__ModuleLoader__.load({
 					var primitive = dataProperty(value, Symbol.toPrimitive);
 					var conversion = dataProperty(value, "toString");
 					return (primitive === null || (primitive && "value" in primitive.descriptor && primitive.descriptor.value == null)) &&
-						!!conversion && conversion.descriptor.value === stringToString;
+						!!conversion && (conversion.descriptor.value === stringToString ||
+							(realmStringToString !== null && conversion.descriptor.value === realmStringToString));
 				} catch (error) {
 					return false;
 				}
@@ -937,7 +935,10 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Inspect native item representations only AFTER the underlying write succeeds. */
-		function confirmItemPayload(items, onPayload) {
+		function confirmItemPayload(items, onPayload, readers) {
+			var clipboardItemTypes = readers.types;
+			var clipboardItemGetType = readers.getType;
+			var blobSize = readers.size;
 			if (!clipboardItemTypes || !clipboardItemGetType || !blobSize) return;
 			function inspect(blob) {
 				try {
@@ -1022,22 +1023,35 @@ window.__ModuleLoader__.load({
 			return false;
 		}
 
-		/** Observe clipboard writes without changing arguments, receivers, results or failures. */
-		function installCopyWatcher(onCopy, onCut) {
+		/** Observe one document without changing API arguments, receivers, results or failures. */
+		function installDocumentWatcher(view, doc, onCopy, onCut, operations, isCurrent) {
 			var active = true;
 			var disposers = [];
 			var pending = [];
 			var dataObservers = new WeakMap();
-			var currentOperation = null;
+			var realmStringToString = platformMember(view, "String", "toString", "value");
+			try {
+				if (realmStringToString && Reflect.apply(functionToString, realmStringToString, []) !==
+					Reflect.apply(functionToString, stringToString, [])) realmStringToString = null;
+			} catch (error) { realmStringToString = null; }
+			var readers = {
+				types: platformMember(view, "ClipboardItem", "types", "get"),
+				getType: platformMember(view, "ClipboardItem", "getType", "value"),
+				size: platformMember(view, "Blob", "size", "get")
+			};
+
+			function isLive() {
+				return active && isCurrent();
+			}
 
 			function confirm(operation, callback) {
-				if (!active || operation.reported) return;
+				if (!isLive() || !operation.isCurrent() || operation.reported) return;
 				operation.reported = true;
-				var parent = currentOperation;
-				currentOperation = null;
+				var parent = operations.current;
+				operations.current = null;
 				try { callback(); } catch (error) {
 					/* Feedback is optional: it must never turn a successful write into a rejection. */
-				} finally { currentOperation = parent; }
+				} finally { operations.current = parent; }
 			}
 
 			function observeEventData(data) {
@@ -1097,12 +1111,12 @@ window.__ModuleLoader__.load({
 
 			function bindClipboardEvent(type, onFire) {
 				function handler(event) {
-					if (!active || event.isTrusted !== true) return;
-					var selection = selectionForClipboard(event);
-					var removedSelection = type === "cut" ? captureCutRemoval(event, selection) : null;
+					if (!isLive() || event.isTrusted !== true) return;
+					var selection = selectionForClipboard(event, view, doc);
+					var removedSelection = type === "cut" ? captureCutRemoval(event, selection, view, doc) : null;
 					var data = null;
 					try { data = observeEventData(event.clipboardData); } catch (error) {}
-					var operation = currentOperation || { reported: false };
+					var operation = operations.current || { reported: false, isCurrent: isLive };
 					var entry = { timer: null, data: data };
 					pending.push(entry);
 					try {
@@ -1111,7 +1125,7 @@ window.__ModuleLoader__.load({
 							if (index !== -1) pending.splice(index, 1);
 							var customPayload = data !== null && data.hasPayload();
 							if (data !== null) data.dispose();
-							if (!active) return;
+							if (!isLive()) return;
 							if (type === "cut") {
 								/* beforeinput can block deletion without cancelling the cut event.
 								   Editor-managed cuts must additionally prove a clipboard payload. */
@@ -1128,14 +1142,14 @@ window.__ModuleLoader__.load({
 						if (data !== null) data.dispose();
 					}
 				}
-				document.addEventListener(type, handler, { capture: true });
-				return function () { document.removeEventListener(type, handler, { capture: true }); };
+				doc.addEventListener(type, handler, { capture: true });
+				return function () { doc.removeEventListener(type, handler, { capture: true }); };
 			}
 			disposers.push(bindClipboardEvent("copy", onCopy));
 			disposers.push(bindClipboardEvent("cut", onCut));
 
 			var clipboard = null;
-			try { clipboard = navigator.clipboard; } catch (error) {}
+			try { clipboard = (view === window ? navigator : view.navigator).clipboard; } catch (error) {}
 			if (clipboard) {
 				["writeText", "write"].forEach(function (name) {
 					/* Select the actual owner per method, including instance-owned overrides. */
@@ -1144,19 +1158,19 @@ window.__ModuleLoader__.load({
 					var method = property.descriptor.value;
 					var patched = function () {
 						"use strict";
-						if (!active) return Reflect.apply(method, this, arguments);
-						var payload = captureApiPayload(name === "writeText", arguments);
-						var parent = currentOperation;
-						var operation = parent || { reported: false };
+						if (!isLive()) return Reflect.apply(method, this, arguments);
+						var payload = captureApiPayload(name === "writeText", arguments, realmStringToString);
+						var parent = operations.current;
+						var operation = parent || { reported: false, isCurrent: isLive };
 						var result;
-						currentOperation = operation;
+						operations.current = operation;
 						try { result = Reflect.apply(method, this, arguments); }
-						finally { currentOperation = parent; }
-						if (!active || !payload) return result;
+						finally { operations.current = parent; }
+						if (!isLive() || !payload) return result;
 						function onSuccess() {
-							if (!active || operation.reported) return;
+							if (!isLive() || !operation.isCurrent() || operation.reported) return;
 							if (payload === true) confirm(operation, onCopy);
-							else confirmItemPayload(payload, function () { confirm(operation, onCopy); });
+							else confirmItemPayload(payload, function () { confirm(operation, onCopy); }, readers);
 						}
 						try {
 							var then = result !== null && (typeof result === "object" || typeof result === "function") ? result.then : null;
@@ -1194,6 +1208,102 @@ window.__ModuleLoader__.load({
 					}
 				}
 				disposers = [];
+			};
+		}
+
+		/** Follow accessible iframe documents; feedback always belongs to the host overlay. */
+		function installCopyWatcher(onCopy, onCut) {
+			var active = true;
+			var documents = new Map();
+			var operations = { current: null };
+
+			function isCurrent(record) {
+				if (!active || documents.get(record.doc) !== record) return false;
+				if (record.frame === null) return true;
+				var parent = documents.get(record.parent);
+				if (!parent || !isCurrent(parent) || record.frame.isConnected === false) return false;
+				try {
+					return record.frame.ownerDocument === record.parent && record.frame.contentDocument === record.doc;
+				} catch (error) { return false; }
+			}
+
+			function containsFrame(node) {
+				return node.nodeType === 1 && (node.tagName === "IFRAME" ||
+					(typeof node.querySelector === "function" && node.querySelector("iframe") !== null));
+			}
+
+			function onMutation(changes) {
+				for (var c = 0; c < changes.length; c++) {
+					var change = changes[c];
+					for (var a = 0; a < change.addedNodes.length; a++) {
+						if (containsFrame(change.addedNodes[a])) { synchronize(); return; }
+					}
+					for (var r = 0; r < change.removedNodes.length; r++) {
+						if (containsFrame(change.removedNodes[r])) { synchronize(); return; }
+					}
+				}
+			}
+
+			function onLoad(event) {
+				if (event.target && event.target.tagName === "IFRAME") synchronize();
+			}
+
+			function attach(entry) {
+				var record = { view: entry.view, doc: entry.doc, frame: entry.frame, parent: entry.parent, observer: null };
+				documents.set(record.doc, record);
+				var stop = installDocumentWatcher(record.view, record.doc, onCopy, onCut, operations, function () {
+					return isCurrent(record);
+				});
+				record.dispose = function () {
+					stop();
+					if (record.observer !== null) record.observer.disconnect();
+					record.doc.removeEventListener("load", onLoad, { capture: true });
+				};
+				record.doc.addEventListener("load", onLoad, { capture: true });
+				if (typeof record.view.MutationObserver === "function") {
+					record.observer = new record.view.MutationObserver(onMutation);
+					record.observer.observe(record.doc, { childList: true, subtree: true });
+				}
+			}
+
+			function synchronize() {
+				if (!active) return;
+				var reachable = new Map();
+				function collect(view, doc, frame, parent) {
+					if (reachable.has(doc)) return;
+					reachable.set(doc, { view: view, doc: doc, frame: frame, parent: parent });
+					var frames = typeof doc.querySelectorAll === "function" ? doc.querySelectorAll("iframe") : [];
+					for (var f = 0; f < frames.length; f++) {
+						try {
+							var childDoc = frames[f].contentDocument;
+							var childView = frames[f].contentWindow;
+							if (childDoc !== null && childView !== null) collect(childView, childDoc, frames[f], doc);
+						} catch (error) {
+							/* Cross-origin/sandboxed documents remain outside this watcher. */
+						}
+					}
+				}
+				collect(window, document, null, null);
+				/* Release old realms before patching replacements, even if an API owner is reused. */
+				documents.forEach(function (record, doc) {
+					if (reachable.has(doc)) return;
+					documents.delete(doc);
+					record.dispose();
+				});
+				reachable.forEach(function (entry, doc) {
+					var record = documents.get(doc);
+					if (!record) attach(entry);
+					else { record.frame = entry.frame; record.parent = entry.parent; }
+				});
+			}
+
+			synchronize();
+			return function () {
+				if (!active) return;
+				active = false;
+				documents.forEach(function (record) { record.dispose(); });
+				documents.clear();
+				operations.current = null;
 			};
 		}
 

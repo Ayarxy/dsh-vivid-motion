@@ -149,7 +149,6 @@ window.__ModuleLoader__.load({
 
 		function fire(x, y) {
 			if (canvas === null || disposed) return;
-			if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 			bursts.push({
 				x: x,
 				y: y,
