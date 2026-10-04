@@ -683,7 +683,7 @@ window.__ModuleLoader__.load({
 			if (locale) ctx.effect(() => locale.register(NS, TEXT), NS + ": dictionaries");
 			ctx.effect(() => { const style = document.createElement("style"); style.dataset.plugin = NS; style.textContent = CSS;
 				document.head.append(style); return () => style.remove(); }, NS + ": styles");
-			ctx.inject(["slots", "modelDirectories", "sessions"], (scope) => {
+			ctx.inject(["slots", "modelDirectories", "sessions", "remote", "remote.session"], (scope) => {
 				scope.slots.inject("conversation.input.model", () => scope.slots.register({
 					// Codex Subscription already uses -10; single-slot priorities must be unique.
 					name: "conversation.input.model", priority: -20, ...(locale ? { locale: NS } : {}),

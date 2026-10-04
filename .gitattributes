@@ -1,0 +1,2 @@
+# 保持冻结参考的原始字节，避免换行转换改变 SHA-256
+tests/reasoning-visual.html -text

@@ -4,8 +4,9 @@ node_modules/
 # 临时脚本与草稿（本插件用 .scratch 存放一次性的 asar 检查脚本等）
 .scratch/
 
-# 本地回归测试、测试夹具与截图
-/tests/
+# 本地测试产物（测试脚本、冻结参考和必要夹具纳入 Git）
+/tests/artifacts/
+/tests/npm-cache/
 
 # 日志与编辑器/系统杂物
 *.log

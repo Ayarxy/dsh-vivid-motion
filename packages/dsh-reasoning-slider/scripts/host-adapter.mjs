@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 // Keep the reference slider, rendering and motion intact. These replacements
-// affect the picker controller, popup shell and pending affordances.
+// affect host service dependencies, the picker controller and popup shell.
 export function adaptHostSelection(source) {
   const newline = source.includes('\r\n') ? '\r\n' : '\n';
   const lines = text => text.replace(/\r?\n/g, newline);
@@ -10,6 +10,12 @@ export function adaptHostSelection(source) {
     assert.equal(source.split(from).length, 2, 'Host adapter anchor must occur exactly once: ' + from.slice(0, 100));
     source = source.replace(from, () => lines(to));
   };
+  // On a directory cache miss, directoryFor reads this.ctx.remote.session.
+  // Cordis resolves that associated namespace through the calling context,
+  // so the consumer must declare it too. Otherwise the first render of a new
+  // session throws and the host abdicates this entry until plugin reload.
+  replace('ctx.inject(["slots", "modelDirectories", "sessions"], (scope) => {',
+    'ctx.inject(["slots", "modelDirectories", "sessions", "remote", "remote.session"], (scope) => {');
   replace('const [highlight, setHighlight] = React.useState(0);', `const [highlight, setHighlight] = React.useState(0);
 			const [optimistic, setOptimistic] = React.useState(null);
 			const ignoredPending = React.useRef(null), access = React.useRef(null);

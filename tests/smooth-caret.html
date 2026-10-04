@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh"><meta charset="utf-8"><title>平滑光标 · 本地回归验证</title>
+<style>
+ :root { --dsw-alias-label-primary:#e5edf9; --dsw-alias-label-secondary:#9cabbd; --dsw-alias-state-business-primary:#88aaff; --dsw-alias-background-primary:#172334; }
+ * { box-sizing:border-box; } body { margin:0; padding:28px; background:#101927; color:#e5edf9; font:15px/1.6 system-ui; }
+ h1 { font-size:23px; margin:0 0 4px; } p { margin:0; } button { border:0; border-radius:8px; background:#88aaff; padding:8px 14px; cursor:pointer; }
+ main { display:grid; grid-template-columns:minmax(320px,1fr) minmax(300px,1fr); gap:24px; max-width:1200px; }
+ .panel { padding:20px; background:#172334; border:1px solid #334359; border-radius:14px; } .panel h2 { margin:0 0 10px; font-size:16px; }
+ #scroll { width:360px; max-width:100%; height:136px; overflow:auto; border:2px solid #47617f; border-radius:5px; }
+ #editor { min-height:100%; padding:10px; outline:0; white-space:pre-wrap; overflow-wrap:break-word; font:16px/26px monospace; }
+ #editor p { margin:0; padding:0; min-height:26px; }
+ textarea { display:block; width:340px; height:100px; resize:none; border:2px solid #47617f; padding:10px; font:16px/26px monospace; white-space:pre-wrap; overflow-wrap:break-word; color:inherit; background:#111d2d; }
+ #results { white-space:pre-wrap; height:410px; overflow:auto; font:12px/1.6 monospace; }
+ #status { margin:10px 0; color:#b9ceff; } .hint { color:#9cabbd; font-size:13px; margin:8px 0 18px; }
+</style>
+<h1>平滑输入光标</h1><p class="hint">本地光标回归夹具 · 不连接宿主，不发送消息。设置控件使用测试适配器，实际外观以 DSH 官方控件为准。</p>
+<main><section class="panel"><h2>聊天输入框</h2><div id="scroll" data-input-scroll><div id="editor" data-composer-input contenteditable="true" role="textbox" aria-label="测试聊天输入框"><p><br></p></div></div>
+<h2 style="margin-top:20px">询问作答框</h2><div data-question-key="fixture"><textarea aria-label="测试询问作答框" id="answer"></textarea></div>
+<div id="settings"></div></section>
+<section class="panel"><button id="run">运行回归测试</button> <button id="toggle">停用组件</button><div id="status">等待测试</div><pre id="results"></pre></section></main>
+<script>
+let registration;
+window.__ModuleLoader__ = { load(value) { registration = value; } };
+const originalRAF = window.requestAnimationFrame.bind(window), originalCAF = window.cancelAnimationFrame.bind(window);
+let frameCalls = 0;
+const pending = new Set();
+window.requestAnimationFrame = (callback) => {
+ let id = originalRAF((now) => { pending.delete(id); frameCalls++; callback(now); }); pending.add(id); return id;
+};
+window.cancelAnimationFrame = (id) => { pending.delete(id); originalCAF(id); };
+const realMedia = window.matchMedia.bind(window);
+const simulatedMedia = new Map();
+window.matchMedia = (query) => {
+ if (!/prefers-reduced-motion|forced-colors/.test(query)) return realMedia(query);
+ if (!simulatedMedia.has(query)) { const media = new EventTarget(); media.matches = false; simulatedMedia.set(query, media); }
+ return simulatedMedia.get(query);
+};
+let hookValues = [], hookIndex = 0;
+const React = {
+ Fragment: 'test-fragment',
+ useSyncExternalStore(subscribe, snapshot) { return snapshot(); },
+ useState(initial) {
+  const index=hookIndex++; if (!(index in hookValues)) hookValues[index] = typeof initial==='function' ? initial() : initial;
+  return [hookValues[index], next => { hookValues[index]=typeof next==='function'?next(hookValues[index]):next; renderSettings(); }];
+ },
+ createElement(tag, props, ...children) {
+  if (typeof tag==='function') return tag({ ...props, children });
+  if (tag===React.Fragment) { const fragment=document.createDocumentFragment(); for(const child of children.flat())if(child!=null&&child!==false)fragment.append(child); return fragment; }
+  const element = document.createElement(tag);
+  for (const [key, value] of Object.entries(props || {})) {
+   if (key === 'key' || value == null) continue;
+   if (key.startsWith('on')) element.addEventListener(key==='onChange'&&tag==='input'?'input':key.slice(2).toLowerCase(), value);
+   else if (key === 'className') element.className = value;
+   else if (key === 'style') { for(const [name, item] of Object.entries(value)) name.startsWith('--') ? element.style.setProperty(name,item) : element.style[name]=item; }
+   else if (key.startsWith('aria-') || key.startsWith('data-')) element.setAttribute(key,String(value));
+   else element[key] = value;
+  }
+  for (const child of children.flat()) if (child !== false && child != null) element.append(child);
+  if (props && 'value' in props) element.value = props.value;
+  return element;
+ }
+};
+const primitiveAdapters = {
+ Switch({ checked, label, onChange }) { return React.createElement('button',{role:'switch','aria-label':label,'aria-checked':checked,onClick:()=>onChange(!checked)},checked?'开':'关'); },
+ Button({children,variant,icon,...props}) { return React.createElement('button',props,...children); },
+ Input(props) { return React.createElement('input',props); },
+ Modal({open,onClose,title,children,footer,className}) {
+  return open && React.createElement('div',{role:'dialog','aria-modal':true,'aria-label':title,className,style:{position:'fixed',top:'15vh',left:'calc(50vw - 180px)',padding:'24px',background:'#172334',zIndex:20},onKeyDown:event=>{if(event.key==='Escape')onClose();}},
+   React.createElement('h2',{},title),...children,React.createElement('div',{},footer));
+ },
+ IconChevronDownOutlineRegular() { return React.createElement('span',{'aria-hidden':true},'⌄'); },
+ Menu({open,anchor,items,onSelect,onClose}) {
+  return React.createElement('div',{onKeyDown:event=>{if(event.key==='Escape')onClose();}},anchor,
+   open && React.createElement('div',{role:'menu'},...items.map(item=>React.createElement('button',{role:'menuitem',onClick:()=>onSelect(item.id)},item.label))));
+ }
+};
+</script>
+<script src="../packages/dsh-smooth-caret/lib/client.js"></script>
+<script>
+const component = registration.factory(name => name==='react'?React:primitiveAdapters);
+const editor = document.querySelector('#editor'), answer = document.querySelector('#answer'), scrollbox = document.querySelector('#scroll');
+const output = document.querySelector('#results'), status = document.querySelector('#status');
+let disposers = [], store, Settings, slot, unsubscribe, active = false;
+function renderSettings() { hookIndex=0; document.querySelector('#settings').replaceChildren(Settings({store})); hookValues.length=hookIndex; }
+function enable() {
+ component.apply({
+  effect(callback) { const dispose = callback(); if (typeof dispose === 'function') disposers.push(dispose); },
+  get() { return null; },
+  slots: { inject(name, callback) { callback(); }, register(options, render) { slot = options; store = options.inject().store; Settings = render; return () => {}; } }
+ });
+ assert(slot.name==='settings.section' && slot.id==='dsh-vivid-motion' && slot.label==='Vivid Motion','dedicated settings section');
+ hookValues=[]; unsubscribe = store.subscribe(renderSettings); renderSettings(); active = true; document.querySelector('#toggle').textContent = '停用组件';
+}
+function disable() {
+ unsubscribe?.(); for (const dispose of disposers.reverse()) dispose(); disposers = []; active = false;
+ document.querySelector('#settings').replaceChildren(); document.querySelector('#toggle').textContent = '启用组件';
+}
+document.querySelector('#toggle').onclick = () => active ? disable() : enable();
+const wait = (ms = 320) => new Promise(resolve => setTimeout(resolve, ms));
+function select(node, offset, anchor = node, anchorOffset = offset) {
+ document.getSelection().setBaseAndExtent(anchor, anchorOffset, node, offset);
+ document.dispatchEvent(new Event('selectionchange'));
+}
+function rich(html, getPoint) {
+ editor.innerHTML = html; editor.focus(); scrollbox.scrollTop = 0;
+ const [node, offset] = getPoint(editor); select(node, offset);
+ editor.dispatchEvent(new InputEvent('input', { bubbles:true }));
+}
+function show() { return document.querySelector('#dsh-smooth-caret-overlay'); }
+function rect() { return show()?.querySelector('.caret').getBoundingClientRect(); }
+function assert(value, message) { if (!value) throw new Error(message); }
+function near(actual, expected, message, tolerance = 1.5) { assert(Math.abs(actual - expected) <= tolerance, `${message}: ${actual} != ${expected}`); }
+function visible() { assert(show() && !show().hidden, 'overlay should be visible'); assert(rect().height > 10, 'caret has a line box'); }
+function native(root) { assert(root.getAttribute('data-dsh-smooth-caret') !== 'active', 'native caret must be restored'); }
+function nativeFocusRect() { const s = document.getSelection(), r = document.createRange(); r.setStart(s.focusNode, s.focusOffset); r.collapse(true); return r.getBoundingClientRect(); }
+const cases = [];
+const test = (name, run) => cases.push({ name, run });
+test('空段落、初次聚焦及全删后均有光标', async () => {
+ rich('<p><br></p>', e => [e.firstChild,0]); await wait(); visible();
+ near(rect().top, editor.querySelector('br').getBoundingClientRect().top, 'empty line');
+ rich('<p>清空前的内容</p>', e => [e.firstChild.firstChild,3]); await wait();
+ rich('<p><br></p>', e => [e.firstChild,0]); await wait(); visible();
+});
+test('完全无子节点的编辑器可见', async () => { rich('', e => [e,0]); await wait(); visible(); });
+test('富文本正向选区活动端点持续前进', async () => {
+ rich('<p>abcdefghijklmnop</p>', e => [e.firstChild.firstChild,2]); await wait();
+ const text = editor.firstChild.firstChild; select(text,8,text,2); await wait(); near(rect().left,nativeFocusRect().left,'forward focus');
+ const before = rect().left; select(text,14,text,2); await wait(); assert(rect().left > before + 40, 'unchanged anchor must not freeze the caret');
+});
+test('富文本反向选区跟随 focus', async () => {
+ const text = editor.firstChild.firstChild; select(text,3,text,14); await wait(); near(rect().left,nativeFocusRect().left,'backward focus');
+});
+test('Shift+Enter 的双 BR 空行不回吸上一行', async () => {
+ rich('<p>first<br><br></p>', e => [e.firstChild,2]); await wait(); visible();
+ near(rect().top,editor.querySelectorAll('br')[1].getBoundingClientRect().top,'soft break');
+ rich('<p>first<br><br><br></p>', e => [e.firstChild,3]); await wait();
+ near(rect().top,editor.querySelectorAll('br')[2].getBoundingClientRect().top,'multiple soft breaks');
+});
+test('尾随真实 BR 与独立空段落', async () => {
+ rich('<p>first<br></p>', e => [e.firstChild,2]); await wait(); visible();
+ near(rect().top,editor.querySelector('br').getBoundingClientRect().top + 26,'trailing break');
+ rich('<p>first</p><p><br></p>', e => [e.lastChild,0]); await wait();
+ near(rect().top,editor.querySelector('br').getBoundingClientRect().top,'empty paragraph');
+});
+test('询问 textarea：空值和结尾换行', async () => {
+ answer.value = ''; answer.focus(); answer.setSelectionRange(0,0); answer.dispatchEvent(new Event('input',{bubbles:true})); await wait(); visible(); const y = rect().top;
+ answer.value = 'line\n'; answer.setSelectionRange(5,5); answer.dispatchEvent(new Event('input',{bubbles:true})); await wait(); visible(); near(rect().top,y+26,'trailing newline');
+});
+test('textarea 正向与反向选区、方向变化均失效缓存', async () => {
+ answer.value = 'abcdefghijklmnop'; answer.setSelectionRange(2,6,'forward'); answer.dispatchEvent(new Event('input',{bubbles:true})); await wait(); const first = rect().left;
+ answer.setSelectionRange(2,12,'forward'); await wait(); assert(rect().left > first+45,'forward textarea endpoint');
+ answer.setSelectionRange(2,12,'backward'); await wait(); assert(rect().left < first-25,'backward textarea endpoint');
+});
+test('textarea 软折行测量包含选区后面的完整文本', async () => {
+ answer.value = 'word '.repeat(22); answer.setSelectionRange(85,85); answer.dispatchEvent(new Event('input',{bubbles:true})); await wait();
+ visible(); assert(rect().top > answer.getBoundingClientRect().top + 25,'wrapped line');
+});
+test('textarea 自身纵向滚动', async () => {
+ answer.value = Array.from({length:30},(_,i)=>'row '+i).join('\n'); answer.setSelectionRange(answer.value.length,answer.value.length); answer.dispatchEvent(new Event('input',{bubbles:true}));
+ answer.scrollTop = answer.scrollHeight; await wait(); assert(!show().hidden,'vertical end should be visible'); visible();
+ answer.scrollTop = 0; answer.dispatchEvent(new Event('scroll')); await wait(); assert(show().hidden,'offscreen textarea caret hidden'); native(answer);
+});
+test('textarea 的 CSS 换行优先于 wrap 属性', async () => {
+ answer.wrap = 'off'; answer.value = 'x'.repeat(140); answer.setSelectionRange(140,140); answer.dispatchEvent(new Event('input',{bubbles:true})); answer.scrollTop=answer.scrollHeight; await wait(); visible(); answer.wrap='soft';
+});
+test('textarea 真正 nowrap 的水平滚动', async () => {
+ answer.wrap='off'; answer.style.whiteSpace='pre'; answer.style.overflowWrap='normal'; answer.value = 'x'.repeat(140); answer.setSelectionRange(140,140); answer.dispatchEvent(new Event('input',{bubbles:true})); answer.scrollLeft = answer.scrollWidth; await wait(); assert(!show().hidden,'horizontal end should be visible'); visible();
+ answer.scrollLeft=0; answer.dispatchEvent(new Event('scroll')); await wait(); assert(show().hidden,'horizontal clipping'); answer.wrap='soft'; answer.style.whiteSpace=''; answer.style.overflowWrap='';
+});
+test('富文本滚动祖先的上下和横向裁剪', async () => {
+ rich(Array.from({length:30},(_,i)=>`<p>line ${i}</p>`).join(''),e=>[e.lastChild.firstChild,7]); scrollbox.scrollTop=scrollbox.scrollHeight; await wait(); visible();
+ const box = show().getBoundingClientRect(), scroll = scrollbox.getBoundingClientRect(); assert(box.top>=scroll.top && box.bottom<=scroll.bottom,'ancestor vertical clip');
+ scrollbox.scrollTop=0; scrollbox.dispatchEvent(new Event('scroll')); await wait(); assert(show().hidden,'offscreen rich caret hidden'); native(editor);
+ rich('<p>visible</p>',e=>[e.firstChild.firstChild,3]); await wait(); visible(); const overlay=show().getBoundingClientRect(); assert(overlay.left>=scroll.left && overlay.right<=scroll.right,'horizontal clip');
+});
+test('组合输入持续平滑，文字内部移动跟随真实活动端点', async () => {
+ rich('<p>abTAIL</p>',e=>[e.firstChild.firstChild,2]); await wait(); store.set({blink:true}); await wait();
+ editor.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:''})); await wait(60); visible(); assert(!show().hasAttribute('data-blink'),'IME temporarily pauses blink');
+ const node=editor.firstChild.firstChild;
+ editor.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,isComposing:true,inputType:'insertCompositionText',data:'zhongwen'}));
+ editor.dispatchEvent(new CompositionEvent('compositionupdate',{bubbles:true,data:'zhongwen'})); node.data='abzhongwenTAIL'; select(node,10);
+ editor.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true,inputType:'insertCompositionText',data:'zhongwen'})); await wait(); visible(); near(rect().left,nativeFocusRect().left,'preedit endpoint');
+ select(node,5,node,10); await wait(); visible(); near(rect().left,nativeFocusRect().left,'internal preedit focus');
+ const frames=frameCalls; await wait(120); assert(frameCalls===frames,'IME candidate pause has no RAF polling');
+ node.data='ab中文TAIL'; select(node,4); editor.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'中文'})); await wait(); visible(); near(rect().left,nativeFocusRect().left,'committed endpoint'); assert(show().hasAttribute('data-blink'),'blink resumes'); store.set({blink:false});
+});
+test('组合节点重建期间不闪回原生，随后采纳新选区', async () => {
+ rich('<p>abzhongTAIL</p>',e=>[e.firstChild.firstChild,7]); await wait(); editor.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})); await wait(60);
+ editor.dispatchEvent(new CompositionEvent('compositionupdate',{bubbles:true,data:'中文'})); editor.firstChild.replaceChildren(document.createTextNode('ab中文TAIL')); document.getSelection().removeAllRanges();
+ await new Promise(resolve=>originalRAF(resolve)); assert(!show().hidden,'keep last valid caret while selection is detached');
+ select(editor.firstChild.firstChild,4); await wait(); visible(); near(rect().left,nativeFocusRect().left,'reconciled node'); editor.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'中文'})); await wait();
+});
+test('compositionend 之后的末次 input 不重新进入组合状态', async () => {
+ rich('<p>abzhongTAIL</p>',e=>[e.firstChild.firstChild,7]); store.set({blink:true}); await wait(); editor.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})); await wait(60);
+ editor.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'中'}));
+ await new Promise(resolve=>originalRAF(resolve)); editor.firstChild.firstChild.data='ab中TAIL'; select(editor.firstChild.firstChild,3);
+ editor.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true,inputType:'insertCompositionText',data:'中'})); await wait(); visible(); near(rect().left,nativeFocusRect().left,'late commit'); assert(show().hasAttribute('data-blink'),'late flag did not restart IME'); store.set({blink:false});
+});
+test('textarea 组合文字和活动端点即时更新，取消后恢复位置', async () => {
+ answer.value='abTAIL'; answer.focus(); answer.setSelectionRange(2,2); answer.dispatchEvent(new Event('input',{bubbles:true})); await wait(); const initial=rect().left;
+ answer.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})); answer.dispatchEvent(new CompositionEvent('compositionupdate',{bubbles:true,data:'中文'}));
+ answer.value='ab中文TAIL'; answer.setSelectionRange(4,4); answer.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true,inputType:'insertCompositionText',data:'中文'})); await wait(); visible(); assert(rect().left>initial+15,'composition advances');
+ answer.setSelectionRange(2,4,'backward'); answer.dispatchEvent(new Event('select',{bubbles:true})); await wait(); near(rect().left,initial,'internal selection focus');
+ answer.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:''})); answer.value='abTAIL'; answer.setSelectionRange(2,2); answer.dispatchEvent(new Event('input',{bubbles:true})); await wait(); visible(); near(rect().left,initial,'cancelled endpoint');
+});
+test('颜色菜单四项、萨尔萨红准确、自定义使用圆角十六进制弹窗', async () => {
+ const menuButton=()=>document.querySelector('[aria-label^="光标颜色:"]'); menuButton().click();
+ let items=[...document.querySelectorAll('[role="menuitem"]')]; assert(items.map(item=>item.textContent).join(',')==='跟随主题,蓝色,萨尔萨红,自定义','four presets'); items[2].click(); assert(store.getSnapshot().color==='#fd3a4a','salsa hex');
+ menuButton().click(); items=[...document.querySelectorAll('[role="menuitem"]')]; items[3].click();
+ let dialog=document.querySelector('[role="dialog"]'); assert(dialog,'custom dialog opens'); assert(getComputedStyle(dialog).borderRadius==='20px','rounded popup');
+ let hex=dialog.querySelector('[aria-label="十六进制颜色"]'); assert(hex.type==='text'&&hex.value==='#FD3A4A','hex input, not native RGB color dialog');
+ hex.value='#123456'; hex.dispatchEvent(new Event('input',{bubbles:true})); dialog=document.querySelector('[role="dialog"]'); assert(store.getSnapshot().color==='#fd3a4a','draft not saved'); [...dialog.querySelectorAll('button')].find(button=>button.textContent==='应用').click(); assert(store.getSnapshot().color==='#123456','applied custom');
+ document.querySelector('[aria-label="自定义光标颜色"]').click(); dialog=document.querySelector('[role="dialog"]'); hex=dialog.querySelector('[aria-label="十六进制颜色"]'); hex.value='#FF'; hex.dispatchEvent(new Event('input',{bubbles:true})); dialog=document.querySelector('[role="dialog"]'); assert([...dialog.querySelectorAll('button')].find(button=>button.textContent==='应用').disabled,'invalid hex blocked'); [...dialog.querySelectorAll('button')].find(button=>button.textContent==='取消').click(); assert(store.getSnapshot().color==='#123456','cancel retains color'); store.set({color:'theme'});
+});
+test('只读、禁用和非目标输入不替换光标', async () => {
+ answer.readOnly=true; answer.focus(); await wait(); native(answer); assert(show().hidden,'read-only'); answer.readOnly=false;
+ answer.disabled=true; await wait(); native(answer); answer.disabled=false;
+ const unrelated=document.createElement('input'); document.querySelector('.panel').append(unrelated); unrelated.focus(); await wait(); assert(show().hidden,'unrelated'); unrelated.remove();
+});
+test('减少动态效果与高对比度变化即时降级', async () => {
+ rich('<p>accessible</p>',e=>[e.firstChild.firstChild,4]); await wait(); visible();
+ for (const media of simulatedMedia.values()) { media.matches=true; media.dispatchEvent(new Event('change')); await wait(); native(editor); assert(show().hidden,'media fallback'); media.matches=false; media.dispatchEvent(new Event('change')); await wait(); visible(); }
+});
+test('闪烁独立开关、颜色粗细和关闭拖尾', async () => {
+ store.set({blink:true,color:'#abcdef',width:3,trail:false}); await wait(); visible(); assert(show().hasAttribute('data-blink'),'blink enabled');
+ assert(getComputedStyle(show()).color==='rgb(171, 205, 239)','custom color'); near(rect().width,3,'width',0.1);
+ assert(show().querySelector('path').getAttribute('d')==='','trail disabled'); store.set({blink:false}); await wait(); assert(!show().hasAttribute('data-blink'),'blink disabled');
+});
+test('同一行按解析弹簧平滑移动，静止无 JS 帧', async () => {
+ store.set({enabled:true,trail:true,blink:false,color:'theme',width:2});
+ rich('<p>abcdefghijklmnop</p>',e=>[e.firstChild.firstChild,1]); await wait(); const start=rect().left;
+ select(editor.firstChild.firstChild,12); await wait(35); const mid=rect().left, end=nativeFocusRect().left;
+ assert(mid>start+1 && mid<end-1,`motion should be in flight: ${start}, ${mid}, ${end}`); await wait(450); near(rect().left,end,'settled');
+ const frames=frameCalls; await wait(180); assert(frameCalls===frames,'idle schedules no RAF'); assert(pending.size===0,'no pending animation');
+});
+test('设置持久化与反复卸载不留下透明光标/帧/镜像', async () => {
+ store.set({color:'#123456',width:1}); await wait(); disable(); native(editor); assert(!show(),'overlay removed'); assert(pending.size===0,'RAF cancelled');
+ enable(); assert(store.getSnapshot().color==='#123456','settings persisted'); assert(store.getSnapshot().width===1,'width persisted'); await wait(); visible();
+ for(let i=0;i<8;i++) { disable(); enable(); await wait(30); }
+ disable(); const frames=frameCalls; editor.dispatchEvent(new Event('input',{bubbles:true})); await wait(); assert(frameCalls===frames,'no listeners retained'); assert(pending.size===0,'no frames retained');
+ assert(!document.querySelector('div[aria-hidden="true"][style*="visibility: hidden"]'),'mirror removed'); enable(); store.set({enabled:true,trail:true,blink:false,color:'theme',width:2}); await wait();
+});
+test('目标移除、重新挂载与同名重复实例', async () => {
+ rich('<p>remove me</p>',e=>[e.firstChild.firstChild,3]); await wait(); const parent=editor.parentNode; editor.remove(); await wait(); native(editor); assert(show().hidden,'removed editor'); parent.append(editor);
+ rich('<p>restored</p>',e=>[e.firstChild.firstChild,4]); await wait(); visible();
+ const extra=[]; component.apply({ effect(fn){extra.push(fn());}, get(){return null;}, slots:{inject(){}} }); assert(document.querySelectorAll('#dsh-smooth-caret-overlay').length===1,'one overlay');
+ for (const cleanup of extra.reverse()) cleanup?.(); await wait(); visible();
+});
+document.querySelector('#run').onclick = async () => {
+ document.querySelector('#run').disabled=true; output.textContent=''; let passed=0;
+ if(!active) enable(); store.set({enabled:true,trail:true,blink:false,color:'theme',width:2});
+ for (const {name,run} of cases) {
+  status.textContent=`正在验证 ${passed+1}/${cases.length}`;
+  try { await run(); output.textContent+=`✓ ${name}\n`; passed++; }
+  catch(error) { output.textContent+=`✗ ${name}\n  ${error.message}\n`; console.error(name,error); }
+ }
+ status.textContent=`${passed}/${cases.length} 通过`; status.dataset.result=passed===cases.length?'pass':'fail';
+ document.querySelector('#run').disabled=false;
+ rich('<p>在这里输入文字，观察平滑光标。</p>',e=>[e.firstChild.firstChild,e.firstChild.firstChild.length]);
+};
+enable();
+</script></html>
