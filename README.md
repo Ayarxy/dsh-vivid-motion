@@ -7,7 +7,7 @@
 | dsh-click-spark | 放射状的点击粒子效果，颜色跟随主题 |
 | dsh-copy-toast | 复制或剪切后显示确认提示，最多堆叠 4 枚 |
 | dsh-smooth-caret | 平滑移动的光标；支持自定义颜色、粗细、开关闪烁和拖尾 |
-| dsh-reasoning-slider | Codex风味的模型/推理强度滑块 |
+| dsh-reasoning-slider | Codex风味的模型推理强度滑块 |
 
 ## 安装
 
