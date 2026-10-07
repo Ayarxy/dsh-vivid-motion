@@ -20,7 +20,7 @@ npm install
 再任选一种方式安装：
 
 - 命令行：`dsh plugin --profile desktop add link:<本目录绝对路径>`。
-- Desktop 应用：「插件 → 添加插件」，输入插件的GitHub 仓库地址或本地目录路径。
+- Desktop 应用：「插件 → 添加插件」，输入本目录的绝对路径。
 
 启用后重启软件。
 
