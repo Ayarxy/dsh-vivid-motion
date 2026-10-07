@@ -76,6 +76,12 @@ window.__ModuleLoader__.load({
 		 * the icon chip, which stays blue in both themes.
 		 * The fixed body portal uses the host Toast's z-index (1100), above
 		 * Modal masks (1000). Raising a child of shell.overlay (20) cannot do so.
+		 *
+		 * `will-change` names filter alongside transform and opacity so Blink
+		 * promotes the toast to its own layer for the blur keyframes too: a
+		 * composited filter animation interpolates on the GPU at the display's
+		 * vsync rate instead of repainting on the main thread every frame,
+		 * which is what high-refresh monitors (144Hz+) run out of budget on.
 		 */
 		var CSS = `
 .dct-layer{position:fixed;bottom:26px;left:50%;width:0;height:0;transform:translateX(-50%);z-index:1100;pointer-events:none}
@@ -91,7 +97,7 @@ window.__ModuleLoader__.load({
 	color:var(--dsw-alias-label-primary,#15161a);
 	font-family:inherit;font-size:13.5px;line-height:1.35;letter-spacing:-.01em;
 	cursor:grab;user-select:none;-webkit-user-select:none;touch-action:pan-y;
-	will-change:transform,opacity;
+	will-change:transform,opacity,filter;
 }
 .dct-toast:active{cursor:grabbing}
 .dct-icon{
